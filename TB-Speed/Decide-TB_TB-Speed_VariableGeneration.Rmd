@@ -1,0 +1,435 @@
+---
+title: "Decide-TB"
+author: "Leyla Sophie Larsson"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, fig.align = 'center')
+# chunk options https://yihui.org/knitr/options/
+```
+
+```{r clear, include=FALSE}
+rm(list = ls())
+```
+
+```{r rstan_options(auto_write = TRUE), include=FALSE}
+# Import libraries
+
+library(haven)
+library(labelled)
+library(foreign)
+library(sjlabelled)
+library(gtsummary)
+library(naniar)
+library(lubridate)
+library(lisa)
+library(ggpubr)
+library(gt)
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(ggforce)
+library(ggdist)
+library(gghalves)
+library(magrittr)
+library(RColorBrewer)
+
+theme_set(theme_light(base_size = 9))
+```
+
+```{r macros}
+# Directories
+tbspeeddir <- "/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/TB-Speed/"
+projdir <- "/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Code/TB-Speed/"
+setwd(projdir)
+# Standard settings
+dotsize <- 0.4 # Set dot size
+
+```
+
+### Aim
+
+The aim of this file is to manipulate the available data to fit the variables we need to have per person to run through the WHO's treatment decision algorithms (TDA). The variables to be used for the TDA can be found in the *"Decide-TB_Codebook.xlsx"* file. This will be done separately per study before merging into one main dataset.
+
+```{r, include=FALSE}
+# Import data
+cohort <- read.csv(paste0(tbspeeddir, "DTB_WP3_TBS_Decent_Cohort.csv"))
+hiv <- read.csv(paste0(tbspeeddir, "DTB_WP3_TBS_HIV.csv"))
+
+# Unlabel
+# This is useful for sorting this out https://www.pipinghotdata.com/posts/2020-12-23-leveraging-labelled-data-in-r/
+cohort <- cohort %>%
+    mutate_if(haven::is.labelled, haven::as_factor)
+hiv <- hiv %>%
+    mutate_if(haven::is.labelled, haven::as_factor)
+```
+
+```{r cr_dictionaries}
+## Make a dictionary for each of the dataframes so its searchable
+dict_cohort <- labelled::generate_dictionary(cohort) %>% 
+    rename("variable_orig" = variable)
+dict_hiv <- labelled::generate_dictionary(hiv) %>% 
+    rename("variable_orig" = variable)
+```
+
+```{r}
+# Some variables are stored as characters so make sure to switch the ones used for the analysis to numeric
+names <- c("cohort","hiv")
+
+for (i in names) {
+  assign(i, type.convert(get(i), as.is = TRUE))
+}
+```
+
+This is generating the TB Labs result
+
+```{r}
+# Generate a binary variable 
+cohort <- cohort %>% mutate(BinaryResult = if_else(Ultra_MTB.factor=="MTB detected",  "MTB Positive", "MTB Negative"))
+var_label(cohort$BinaryResult) <- "PCR result, binary"
+
+hiv <- hiv %>% mutate(BinaryResult = if_else(Xpert_res=="Positive","MTB Positive", "MTB Negative"))
+var_label(hiv$BinaryResult) <- "PCR result, binary"
+```
+
+**Age-related variables**
+
+```{r, include=TRUE}
+# Three variables are to be created for Age
+# Age (continuous but the range is from 0 to 10 years)
+cohort <- cohort %>% dplyr::rename(age = Age_y)
+var_label(cohort$age) <- "Age"
+
+hiv <- hiv %>% dplyr::rename(age = Age_y)
+var_label(hiv$age) <- "Age"
+
+# Age (categorized from < 2 and 2 - 10 years)
+cohort$age_cat <- cut(cohort$age,
+                 breaks=c(0,2,10,15),
+                 labels=c('< 2 years', '2 - 10 years', '> 10 years'))
+var_label(cohort$age_cat) <- "Age, categories"
+cohort$age_cat <- factor(cohort$age_cat, levels = c('< 2 years', '2 - 10 years', '> 10 years'))
+
+hiv$age_cat <- cut(hiv$age,
+                 breaks=c(0,2,10,15),
+                 labels=c('< 2 years', '2 - 10 years', '> 10 years'))
+var_label(hiv$age_cat) <- "Age, categories"
+hiv$age_cat <- factor(hiv$age_cat, levels = c('< 2 years', '2 - 10 years', '> 10 years'))
+
+# Age (categorized from < 2 months, 2 months to 5 years, 5 - 9 years and > 9 years)
+cohort$age_cat_ext <- cut(cohort$age,
+                 breaks=c(0,0.1667,5,9,15),
+                 labels=c('< 2 months', '2 months to 5 years', '5 - 9 years', '> 9 years'))
+var_label(cohort$age_cat_ext) <- "Age, extended categories"
+cohort$age_cat_ext <- factor(cohort$age_cat_ext, levels = c('< 2 months', '2 months to 5 years', '5 - 9 years', '> 9 years'))
+
+hiv$age_cat_ext <- cut(hiv$age,
+                 breaks=c(0,0.1667,5,9,15),
+                 labels=c('< 2 months', '2 months to 5 years', '5 - 9 years', '> 9 years'))
+var_label(hiv$age_cat_ext) <- "Age, extended categories"
+hiv$age_cat_ext <- factor(hiv$age_cat_ext, levels = c('< 2 months', '2 months to 5 years', '5 - 9 years', '> 9 years'))
+```
+
+**Sex**
+
+```{r}
+cohort <- cohort %>% mutate(sex=if_else(enr_gen==1, "Male", "Female"))
+hiv <- hiv %>% mutate(sex=if_else(dem_gen==1, "Male", "Female"))
+```
+
+**Symptoms suggestive of TB related variables**
+
+```{r, include=TRUE}
+# Cough ≥ 2 weeks 
+cohort <- cohort %>% mutate(cough_2weeks = if_else(ini_sym_cou.factor == "Yes > 2weeks",  "Yes", "No"))
+var_label(cohort$cough_2weeks) <- "Cough more than 2 weeks?"
+
+hiv <- hiv %>% mutate(cough_2weeks = if_else(itb_cou == 1 & (itb_cou_dur.factor=="> 2 weeks" | itb_cou_dur.factor=="> 3 weeks" | itb_cou_dur.factor=="> 4 weeks"),  "Yes", "No"))
+var_label(hiv$cough_2weeks) <- "Cough more than 2 weeks?"
+
+# Weight loss 
+cohort <- cohort %>% mutate(weightloss = if_else(ini_sym_wgt == 1, "Yes", "No"))
+var_label(cohort$weightloss) <- "Weight loss?"
+
+hiv <- hiv %>% mutate(weightloss = if_else(itb_wgt == 1, "Yes", "No"))
+var_label(hiv$weightloss) <- "Weight loss?"
+
+# Fever ≥ 2 weeks 
+cohort <- cohort %>% mutate(fever_2weeks = if_else(ini_sym_fev.factor == "Yes > 2weeks",  "Yes", "No"))
+var_label(cohort$fever_2weeks) <- "Fever more than 2 weeks?"
+
+hiv <- hiv %>% mutate(fever_2weeks = if_else((itb_fev_dur.factor=="> 2 weeks" | itb_fev_dur.factor=="> 3 weeks" | itb_fev_dur.factor=="> 4 weeks"),  "Yes", "No"))
+var_label(hiv$fever_2weeks) <- "Fever more than 2 weeks?"
+
+# Lethargy 
+cohort <- cohort %>% mutate(lethargy = if_else(ini_sym_fat == 1,  "Yes", "No"))
+var_label(cohort$lethargy) <- "Lethargy?"
+
+hiv <- hiv %>% mutate(lethargy = if_else(itb_fat == 1, "Yes", "No"))
+var_label(hiv$lethargy) <- "Lethargy?"
+
+# Haemoptysis
+cohort <- cohort %>% mutate(haemoptysis = if_else(ini_sym_cou_spu == 1,  "Yes", "No"))
+var_label(cohort$haemoptysis) <- "Haemoptysis?"
+
+hiv <- hiv %>% mutate(haemoptysis = if_else(itb_hem.factor == "Yes",  "Yes", "No"))
+var_label(hiv$haemoptysis) <- "Haemoptysis?"
+
+# Night sweats 
+cohort <- cohort %>% mutate(nightsweats = if_else(ini_sym_nig == 1,  "Yes", "No"))
+var_label(cohort$nightsweats) <- "Night sweats?"
+
+hiv <- hiv %>% mutate(nightsweats = NA)
+var_label(hiv$nightsweats) <- "Night sweats?"
+
+# Swollen lymph nodes 
+cohort <- cohort %>% mutate(lymphnodes = if_else(ini_sig_ade == 1,  "Yes", "No"))
+var_label(cohort$lymphnodes) <- "Swollen lymph nodes?"
+
+hiv <- hiv %>% mutate(lymphnodes = if_else(ice_ade == 1 | ice_ade == 2,  "Yes", "No"))
+var_label(hiv$lymphnodes) <- "Swollen lymph nodes?"
+
+# Tachycardia  
+cohort <- cohort %>% mutate(tachycardia = case_when(
+        ini_vit_hrt > 160 & age_cat_ext == "< 2 months" ~ "Yes",
+        ini_vit_hrt > 150 & age >= 0.1667 & age < 1 ~ "Yes",
+        ini_vit_hrt > 140 & age >= 1 & age < 5 ~ "Yes",
+        ini_vit_hrt > 120 & age > 5 ~ "Yes"))
+var_label(cohort$tachycardia) <- "Tachycardia?"
+
+hiv <- hiv %>% mutate(tachycardia = case_when(
+        ivs_hrt > 160 & age_cat_ext == "< 2 months" ~ "Yes",
+        ivs_hrt > 150 & age >= 0.1667 & age < 1 ~ "Yes",
+        ivs_hrt > 140 & age >= 1 & age < 5 ~ "Yes",
+        ivs_hrt > 120 & age > 5 ~ "Yes"))
+var_label(hiv$tachycardia) <- "Tachycardia?"
+
+# Tachypnoea  
+cohort <- cohort %>% mutate(tachypnoea = case_when(
+        ini_vit_res > 60 & age_cat_ext == "< 2 months" ~ "Yes",
+        ini_vit_res > 50 & age >= 0.1667 & age < 1 ~ "Yes",
+        ini_vit_res > 40 & age >= 1 & age < 5 ~ "Yes",
+        ini_vit_res > 30 & age > 5 ~ "Yes"))
+var_label(cohort$tachypnoea) <- "Tachypnoea?"
+
+hiv <- hiv %>% mutate(tachypnoea = case_when(
+        ivs_res > 60 & age_cat_ext == "< 2 months" ~ "Yes",
+        ivs_res > 50 & age >= 0.1667 & age < 1 ~ "Yes",
+        ivs_res > 40 & age >= 1 & age < 5 ~ "Yes",
+        ivs_res > 30 & age > 5 ~ "Yes"))
+var_label(hiv$tachypnoea) <- "Tachypnoea?"
+
+# TB contact in the last 24 months?
+cohort <- cohort %>% mutate(TBContact = if_else(ini_con == 1 | ini_con == 2 | ini_con == 3, "Yes", "No"))
+var_label(cohort$TBContact) <- "TB contact?"
+
+hiv <- hiv %>% mutate(TBContact = if_else(itb_exp_con.factor == "Yes", "Yes", "No"))
+var_label(hiv$TBContact) <- "TB contact?"
+
+# Replace all missing to "No"
+for (col in c("cough_2weeks", "TBContact", "tachypnoea", "tachycardia", "lymphnodes", "nightsweats", "lethargy", "haemoptysis", "fever_2weeks", "weightloss")) {
+  hiv[is.na(hiv[, col]), col] <- "No"
+  cohort[is.na(cohort[, col]), col] <- "No"
+}
+```
+
+**HIV**
+
+```{r}
+# Overall HIV status 
+cohort <- cohort %>% mutate(hivstatus = if_else(cm0_hiv_res == 1, "HIV positive", "HIV negative"))
+var_label(cohort$hivstatus) <- "Overall HIV status - tested and reported"
+
+hiv <- hiv %>% mutate(hivstatus = "HIV positive")
+var_label(hiv$hivstatus) <- "Overall HIV status - tested and reported"
+
+cohort <- cohort %>% mutate(artstatus = NA)
+
+hiv <- hiv %>% mutate(artstatus = if_else(ARV=="Yes", "HIV pos already on ART", 
+                                          if_else(ARV=="Naive","Naive", "HIV pos not on ART")))
+
+for (col in c("hivstatus")) {
+  cohort[is.na(cohort[, col]), col] <- "Unknown"
+  hiv[is.na(hiv[, col]), col] <- "Unknown"
+}
+```
+
+**Severe acute malnutrition**
+
+```{r}
+cohort <- cohort %>% mutate(sam = if_else(SAM_stt == "Yes",  "Yes", "No"))
+cohort$sam[is.na(cohort$sam)] <- "No"
+var_label(cohort$sam) <- "Severe acute malnutrition"
+
+hiv <- hiv %>% mutate(sam = if_else(SAM_stt == "Yes",  "Yes", "No"))
+hiv$sam[is.na(hiv$sam)] <- "No"
+var_label(hiv$sam) <- "Severe acute malnutrition"
+```
+
+**Danger signs**
+
+```{r}
+# Danger signs - binary
+cohort <- cohort %>% mutate(dangersigns = "No")
+hiv <- hiv %>% mutate(dangersigns = "No")
+var_label(cohort$dangersigns) <- "Does the child show any danger signs?"
+var_label(hiv$dangersigns) <- "Does the child show any danger signs?"
+```
+
+*mWRD*
+
+```{r}
+# Was a respiratory sample, stool sample, or urine sample collected for mWRD?
+cohort <- cohort %>% mutate(sample = if_else(!is.na(BinaryResult),  "Yes", "No"))
+var_label(cohort$sample) <- "Was a respiratory sample, stool sample, or urine sample collected for mWRD?"
+
+hiv <- hiv %>% mutate(sample = if_else(!is.na(BinaryResult),  "Yes", "No"))
+var_label(hiv$sample) <- "Was a respiratory sample, stool sample, or urine sample collected for mWRD?"
+
+# What is the Xpert result?
+cohort <- cohort %>% mutate(Xpert_result = if_else(BinaryResult == "MTB Positive",  "MTB Positive", "MTB Negative"))
+var_label(cohort$Xpert_result) <- "What is the Mtb Xpert result?"
+
+hiv <- hiv %>% mutate(Xpert_result = if_else(BinaryResult == "MTB Positive",  "MTB Positive", "MTB Negative"))
+var_label(hiv$Xpert_result) <- "What is the Mtb Xpert result?"
+
+# What is the Mtb final result?
+cohort <- cohort %>% mutate(MTb_result = if_else(BinaryResult == "MTB Positive",  "MTB Positive", "MTB Negative"))
+var_label(cohort$MTb_result) <- "What is the Mtb final result?"
+
+hiv <- hiv %>% mutate(MTb_result = if_else(BinaryResult == "MTB Positive",  "MTB Positive", "MTB Negative"))
+var_label(hiv$MTb_result) <- "What is the Mtb final result?"
+
+# Replace all missing to "No"
+for (col in c("MTb_result")) {
+  cohort[is.na(cohort[, col]), col] <- "MTB Negative"
+  hiv[is.na(hiv[, col]), col] <- "MTB Negative"
+}
+
+```
+
+*Chest X-Rays*
+
+```{r}
+# Cavities 
+cohort <- cohort %>% mutate(CXR_cavitations = if_else(Agree_6_final==1,6,0))
+var_label(cohort$CXR_cavitations) <- "Did the chest X-ray show signs of cavitations?"
+
+hiv <- hiv %>% mutate(CXR_cavitations = if_else(Agree_6_final==1,6,0))
+var_label(hiv$CXR_cavitations) <- "Did the chest X-ray show signs of cavitations?"
+
+# Enlarged lymph nodes
+cohort <- cohort %>% mutate(CXR_lymph = if_else(Agree_2_final==1,17,0))
+var_label(cohort$CXR_lymph) <- "Did the chest X-ray show signs of lymphadenopathy?"
+
+hiv <- hiv %>% mutate(CXR_lymph = if_else(Agree_2_final==1,17,0))
+var_label(hiv$CXR_lymph) <- "Did the chest X-ray show signs of lymphadenopathy?"
+
+# Opacities 
+cohort <- cohort %>% mutate(CXR_opacity = if_else(Agree_3_final==1,5,0))
+var_label(cohort$CXR_opacity) <- "Did the chest X-ray show signs of opacities?"
+
+hiv <- hiv %>% mutate(CXR_opacity = if_else(Agree_3_final==1,5,0))
+var_label(hiv$CXR_opacity) <- "Did the chest X-ray show signs of opacities?"
+
+# Miliary pattern 
+cohort <- cohort %>% mutate(CXR_miliary = if_else(Agree_4_final==1,15,0))
+var_label(cohort$CXR_miliary) <- "Did the chest X-ray show signs of miliary patterns?"
+
+hiv <- hiv %>% mutate(CXR_miliary = if_else(Agree_4_final==1,15,0))
+var_label(hiv$CXR_miliary) <- "Did the chest X-ray show signs of miliary patterns?"
+
+# Effusion 
+cohort <- cohort %>% mutate(CXR_effusion = if_else(Agree_5_final==1,8,0))
+var_label(cohort$CXR_effusion) <- "Did the chest X-ray show signs of effusion?"
+
+hiv <- hiv %>% mutate(CXR_effusion = if_else(Agree_5_final==1,8,0))
+var_label(hiv$CXR_effusion) <- "Did the chest X-ray show signs of effusion?"
+```
+
+```{r}
+# Replace all to zero if missing. 
+for (col in c("CXR_effusion", "CXR_miliary", "CXR_lymph", "CXR_cavitations","CXR_opacity")) {
+  cohort[is.na(cohort[, col]), col] <- 0
+  hiv[is.na(hiv[, col]), col] <- 0
+}
+```
+
+### Generate Decide-TB specific dataframes and save them for later use 
+
+```{r}
+# First generate study-identifiers
+cohort <- cohort %>%
+  mutate(study = case_when(!is.na(X) ~ "Cohort")) %>%
+  rename(id = X)
+var_label(cohort$study) <- "Which study does the data originate from?"
+
+hiv <- hiv %>%
+  mutate(study = case_when(!is.na(X) ~ "HIV")) %>%
+  rename(id = X)
+var_label(hiv$study) <- "Which study does the data originate from?"
+
+# Generate high risk group (< 2 years, CLHIV, SAM)
+cohort <- cohort %>% mutate(highrisk = case_when(
+        age < 2 | hivstatus == "HIV Positive" | sam == "Yes" ~ "Yes",
+        age >= 2 & (hivstatus != "HIV Positive" | is.na(hivstatus)) & (sam != "Yes" | is.na(sam)) ~ "No"))
+var_label(cohort$highrisk) <- "High risk group (< 2 years, CLHIV, SAM)?"
+
+hiv <- hiv %>% mutate(highrisk = case_when(
+        age < 2 | hivstatus == "HIV Positive" | sam == "Yes" ~ "Yes",
+        age >= 2 & (hivstatus != "HIV Positive" | is.na(hivstatus)) & (sam != "Yes" | is.na(sam)) ~ "No"))
+var_label(hiv$highrisk) <- "High risk group (< 2 years, CLHIV, SAM)?"
+```
+
+```{r}
+# Diagnostic classification
+cohort <- cohort %>% mutate(DiagnClass_TDA = case_when(
+  NIH_TB == "Unlikely" ~ "Unlikely TB",
+  NIH_TB == "Unconfirmed" ~ "Unconfirmed TB",
+  NIH_TB == "Confirmed" ~ "Confirmed TB"))
+
+hiv <- hiv %>% mutate(DiagnClass_TDA = case_when(
+  NIH_TB == "Unlikely" ~ "Unlikely TB",
+  NIH_TB == "Unconfirmed" ~ "Unconfirmed TB",
+  NIH_TB == "Confirmed" ~ "Confirmed TB"))
+```
+
+```{r}
+# Treatment initiation
+cohort <- cohort %>% mutate(
+  Treatment = if_else(TBT_initiated==1, "Yes", "No"))
+var_label(cohort$Treatment) <- "Treatment initiation?"
+
+hiv <- hiv %>% mutate(
+  Treatment = if_else(tbt_ini=="Yes", "Yes", "No"))
+var_label(hiv$Treatment) <- "Treatment initiation?"
+```
+
+```{r}
+# Variable if CXR was done
+cohort <- cohort %>% mutate(
+  CXR_Done = if_else(is.na(cxr_d0_dat), "Missing", "CXR done"))
+
+hiv <- hiv %>% mutate(
+  CXR_Done = if_else(is.na(cxr_dat), "Missing", "CXR done"),
+  Type = "Tertiary")
+```
+
+```{r}
+cohort <- cohort[,c("study","id","age","age_cat","age_cat_ext","sex","Type","highrisk","TBContact","hivstatus","artstatus","sam","dangersigns","DiagnClass_TDA","Treatment","cough_2weeks","weightloss","fever_2weeks","lethargy","haemoptysis","nightsweats","lymphnodes","tachycardia","tachypnoea","CXR_cavitations","CXR_lymph","CXR_opacity","CXR_miliary","CXR_effusion","sample","Xpert_result","MTb_result","BinaryResult","CXR_Done")]
+
+hiv <- hiv[,c("study","id","age","age_cat","age_cat_ext","sex","Type","highrisk","TBContact","hivstatus","artstatus","sam","dangersigns","DiagnClass_TDA","Treatment","cough_2weeks","weightloss","fever_2weeks","lethargy","haemoptysis","nightsweats","lymphnodes","tachycardia","tachypnoea","CXR_cavitations","CXR_lymph","CXR_opacity","CXR_miliary","CXR_effusion","sample","Xpert_result","MTb_result","BinaryResult","CXR_Done")]
+```
+
+```{r}
+# Save for later use
+save(cohort,file="/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_TB-Speed_CohortDataset.Rda")
+save(hiv,file="/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_TB-Speed_HIVDataset.Rda")
+```
+

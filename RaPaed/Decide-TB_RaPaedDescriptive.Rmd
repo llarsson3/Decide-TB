@@ -1,0 +1,211 @@
+---
+title: "Decide-TB - TDA"
+author: "Leyla Sophie Larsson"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, fig.align = 'center')
+# chunk options https://yihui.org/knitr/options/
+```
+
+```{r clear, include=FALSE}
+rm(list = ls())
+```
+
+```{r rstan_options(auto_write = TRUE), include=FALSE}
+# Import libraries
+
+library(haven)
+library(foreign)
+library(gtsummary)
+library(naniar)
+library(lubridate)
+library(lisa)
+library(ggpubr)
+library(gt)
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(RColorBrewer)
+library(hrbrthemes)
+
+theme_set(theme_light(base_size = 9))
+pal <- c("#FF8C00", "#A034F0", "#159090", "#152679")
+```
+
+```{r macros}
+# Directories
+datadir <- "/Volumes/Files/Studies/Decide-TB/Analysis/IPD/RaPaed/"
+setwd(datadir)
+# Standard settings
+dotsize <- 0.4 # Set dot size
+```
+
+```{r, include=FALSE}
+# Import data
+load("Decide-TB_RaPaedDataset.Rda")
+load("Decide-TB_RaPaedDict.Rda")
+```
+
+Describe the medical history of the cohort based on Laura's powerpoint
+
+1. Previous Hospitalisation
+
+```{r}
+library(ggplot2)
+
+# Extract the columns of interest from your dataframe
+test <- rapaed[, c("PersID","DiagnClass","Q_404c3_Qes", "Hospital_TB", "Hospital_Pneum", "Hospital_Cough", "Hospital_FTT", "Hospital_Fever", "Hospital_Haemopt", "Hospital_Malaria", "Hospital_Convul", "Hospital_Asthma", "Hospital_Diarr", "Hospital_Lymph", "Hospital_Infection", "Hospital_Other")]
+
+# Am going to have to create a new dataframe in the right format 
+test_conf <- subset(test,DiagnClass=="Confirmed TB")
+test_unconf <- subset(test,DiagnClass=="Unconfirmed TB")
+test_unlik <- subset(test,DiagnClass=="Unlikely TB")
+```
+
+```{r}
+# Load the required packages
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Reshape the data to calculate the sum of each Hospital variable by Q_404c3_Qes
+df_sum <- test_conf %>%
+  group_by(Q_404c3_Qes) %>%
+  summarize_at(vars(starts_with("Hospital_")), sum)
+
+# Reshape the data to long format
+df_long <- df_sum %>%
+  pivot_longer(cols = starts_with("Hospital_"), names_to = "Reason", values_to = "Count")
+
+# Create the stacked bar chart
+ggplot(df_long, aes(x = Q_404c3_Qes, y = Count, fill = Reason)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ Q_404c3_Qes, scales = "free_x") +
+  labs(x = "Q_404c3_Qes", y = "Count", fill = "Reason for Hospitalization") +
+  theme(legend.position = "bottom")
+
+```
+
+
+
+```{r}
+# Load the ggplot2 package
+library(ggplot2)
+library(cowplot)
+
+
+
+sum_count <- aggregate(Count ~ Q_404c3_Qes, df_conf, sum)
+ordered_levels <- sum_count$Q_404c3_Qes[order(sum_count$Count, decreasing = TRUE)]
+df_conf$Q_404c3_Qes <- factor(df_conf$Q_404c3_Qes, levels = ordered_levels)
+
+confirmed <- ggplot(df_conf, aes(x = Q_404c3_Qes, y = Count)) +
+  geom_col(aes(fill = Hospitalisation)) 
+
+df_unconf <- subset(df,Diagnosis=="Unconfirmed TB")
+
+sum_count <- aggregate(Count ~ Q_404c3_Qes, df_unconf, sum)
+ordered_levels <- sum_count$Q_404c3_Qes[order(sum_count$Count, decreasing = TRUE)]
+df_unconf$Q_404c3_Qes <- factor(df_unconf$Q_404c3_Qes, levels = ordered_levels)
+
+unconfirmed <- ggplot(df_unconf, aes(x = Q_404c3_Qes, y = Count)) +
+  geom_col(aes(fill = Hospitalisation)) 
+
+df_unlik <- subset(df,Diagnosis=="Unlikely TB")
+
+sum_count <- aggregate(Count ~ Q_404c3_Qes, df_unlik, sum)
+ordered_levels <- sum_count$Q_404c3_Qes[order(sum_count$Count, decreasing = TRUE)]
+df_unlik$Q_404c3_Qes <- factor(df_unlik$Q_404c3_Qes, levels = ordered_levels)
+
+unlikely <- ggplot(df_unlik, aes(x = Q_404c3_Qes, y = Count)) +
+  geom_col(aes(fill = Hospitalisation)) 
+
+# Multiple plots
+plot_grid(confirmed, unconfirmed, unlikely, labels = "AUTO")
+
+```
+
+```{r}
+# Load the ggplot2 package
+library(ggplot2)
+
+# Calculate the sum of "Count" within each level of "Diagnosis" and "Q_404c3_Qes"
+sum_count <- aggregate(Count ~ Diagnosis + Q_404c3_Qes, df, sum)
+
+# Order the levels of "Diagnosis" based on the sum of "Count"
+ordered_levels <- sum_count[order(sum_count$Count, decreasing = TRUE), "Diagnosis"]
+
+# Convert "Diagnosis" and "Q_404c3_Qes" to factor with ordered levels
+df$Diagnosis <- factor(df$Diagnosis, levels = ordered_levels)
+df$Q_404c3_Qes <- factor(df$Q_404c3_Qes)
+
+# Create a stacked bar chart with substratification
+ggplot(df, aes(x = Diagnosis, y = Count, fill = Q_404c3_Qes)) +
+  geom_col() +
+  labs(title = "Frequency of child's hospital admissions in the last 12 months prior enrolment by reason for presentation")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+2. Current Hospitalisation
+
+```{r}
+library(ggplot2)
+
+# Extract the columns of interest from your dataframe
+test <- rapaed[, c("PersID","Q_404d1_Qes","Q_404d2_Qes","DiagnClass")]
+test <- subset(test, Q_404d1_Qes=="1. Yes")
+
+# Generate the dataframe 
+Diagnosis <- c("Confirmed TB", "Unconfirmed TB", "Unlikely TB",
+               "Confirmed TB", "Unconfirmed TB", "Unlikely TB",
+               "Confirmed TB", "Unconfirmed TB", "Unlikely TB")
+Count <- c(126,94,40,2,0,18,1,0,1)
+Hospitalisation <- c("Likely TB/TB related","Likely TB/TB related","Likely TB/TB related",
+                     "Unlikely TB","Unlikely TB","Unlikely TB",
+                     "No TB/Other","No TB/Other","No TB/Other")
+df <- data.frame(Diagnosis, Hospitalisation, Count)
+```
+
+```{r}
+# Load the ggplot2 package
+library(ggplot2)
+
+# Calculate the sum of "count" within each level of "diagn"
+sum_count <- aggregate(Count ~ Diagnosis, df, sum)
+
+# Order the levels of "diagn" based on the sum of "count"
+ordered_levels <- sum_count$Diagnosis[order(sum_count$Count, decreasing = TRUE)]
+
+# Reorder the "diagn" variable in the dataframe based on the ordered levels
+df$Diagnosis <- factor(df$Diagnosis, levels = ordered_levels)
+
+# Create a stacked bar chart ordered by size
+ggplot(df, aes(x = Diagnosis, y = Count)) +
+  geom_col(aes(fill = Hospitalisation))
+
+```
+
+
+
+
+
+
+

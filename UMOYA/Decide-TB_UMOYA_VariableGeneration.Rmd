@@ -1,0 +1,305 @@
+---
+title: "Decide-TB"
+author: "Leyla Sophie Larsson"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, fig.align = 'center')
+# chunk options https://yihui.org/knitr/options/
+```
+
+```{r clear, include=FALSE}
+rm(list = ls())
+```
+
+```{r rstan_options(auto_write = TRUE), include=FALSE}
+# Import libraries
+
+library(haven)
+library(labelled)
+library(foreign)
+library(sjlabelled)
+library(gtsummary)
+library(naniar)
+library(lubridate)
+library(lisa)
+library(ggpubr)
+library(gt)
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(ggforce)
+library(ggdist)
+library(gghalves)
+library(magrittr)
+library(RColorBrewer)
+library(dplyr)
+
+theme_set(theme_light(base_size = 9))
+```
+
+```{r macros}
+# Directories
+umoyadir <- "/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/UMOYA/"
+projdir <- "/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Code/TDA/"
+setwd(projdir)
+# Standard settings
+dotsize <- 0.4 # Set dot size
+
+```
+
+### Aim
+
+The aim of this file is to manipulate the available data to fit the variables we need to have per person to run through the WHO's treatment decision algorithms (TDA). The variables to be used for the TDA can be found in the *"Decide-TB_Codebook.xlsx"* file. This will be done separately per study before merging into one main dataset.
+
+```{r, include=FALSE}
+# Import data
+umoya <- read_dta(paste0(umoyadir, "umoya_clinical_UM001_550_20241011.dta"))
+
+# Unlabel
+# This is useful for sorting this out https://www.pipinghotdata.com/posts/2020-12-23-leveraging-labelled-data-in-r/
+umoya <- umoya %>%
+    mutate_if(haven::is.labelled, haven::as_factor)
+```
+
+```{r cr_dictionaries}
+## Make a dictionary for each of the dataframes so its searchable
+dict_umoya <- labelled::generate_dictionary(umoya) %>% 
+    rename("variable_orig" = variable)
+```
+
+```{r}
+# Some variables are stored as characters so make sure to switch the ones used for the analysis to numeric
+names <- c("umoya")
+
+for (i in names) {
+  assign(i, type.convert(get(i), as.is = TRUE))
+}
+```
+
+```{r}
+# Generate a binary variable 
+umoya <- umoya %>% mutate(BinaryResult = if_else(xpert_resultwk000=="2 MTB complex detected/trace","MTB Positive", "MTB Negative"))
+var_label(umoya$BinaryResult) <- "PCR result, binary"
+```
+
+**Age-related variables**
+
+```{r, include=TRUE}
+# Three variables are to be created for Age
+umoya <- umoya %>% 
+  mutate(age_years = agemo_w0 /12) %>% 
+  rename(age = age_years)
+var_label(umoya$age) <- "Age"
+
+# Age (categorized from < 2 and 2 - 10 years)
+umoya$age_cat <- cut(umoya$age,
+                 breaks=c(0,2,10,15),
+                 labels=c('< 2 years', '2 - 10 years', '> 10 years'))
+var_label(umoya$age_cat) <- "Age, categories"
+umoya$age_cat <- factor(umoya$age_cat, levels = c('< 2 years', '2 - 10 years', '> 10 years'))
+
+# Age (categorized from < 2 months, 2 months to 5 years, 5 - 9 years and > 9 years)
+umoya$age_cat_ext <- cut(umoya$age,
+                 breaks=c(0,0.1667,5,9,15),
+                 labels=c('< 2 months', '2 months to 5 years', '5 - 9 years', '> 9 years'))
+var_label(umoya$age_cat_ext) <- "Age, extended categories"
+umoya$age_cat_ext <- factor(umoya$age_cat_ext, levels = c('< 2 months', '2 months to 5 years', '5 - 9 years', '> 9 years'))
+```
+
+**Sex**
+
+```{r}
+umoya <- umoya %>% mutate(sex=if_else(umf01_ubl_gender=="0 - Male", "Male", "Female"))
+```
+
+**Symptoms suggestive of TB related variables**
+
+```{r, include=TRUE}
+# Cough ≥ 2 weeks 
+umoya <- umoya %>% mutate(cough_2weeks = if_else(cough_w0 == "1 - Yes" & (coughtype_w0=="2 - Chronic (> 2 weeks)" | coughduration_w0>=14),  "Yes", "No"))
+var_label(umoya$cough_2weeks) <- "Cough more than 2 weeks?"
+
+# Weight loss 
+umoya <- umoya %>% mutate(weightloss = if_else(WHOweight_w0 == 1, "Yes", "No"))
+var_label(umoya$weightloss) <- "Weight loss?"
+
+# Failure to thrive 
+umoya <- umoya %>% mutate(failuretothrive = if_else(failurethrive_w0 == "1 - Yes",  "Yes", "No"))
+var_label(umoya$failuretothrive) <- "Failure to thrive?"
+
+# Fever ≥ 2 weeks 
+umoya <- umoya %>% mutate(fever_2weeks = if_else(fever_w0 == "1 - Yes" & feverduration_w0>=14,  "Yes", "No"))
+var_label(umoya$fever_2weeks) <- "Fever more than 2 weeks?"
+
+# Lethargy 
+umoya <- umoya %>% mutate(lethargy = if_else(WHOactivity_w0 == 1,  "Yes", "No"))
+var_label(umoya$lethargy) <- "Lethargy?"
+
+# Haemoptysis
+umoya <- umoya %>% mutate(haemoptysis = if_else(WHOhaem_w0 == 1,  "Yes", "No"))
+var_label(umoya$haemoptysis) <- "Haemoptysis?"
+
+# Night sweats 
+umoya <- umoya %>% mutate(nightsweats = if_else(WHOsweat_w0 == 1,  "Yes", "No"))
+var_label(umoya$nightsweats) <- "Night sweats?"
+
+# Swollen lymph nodes
+umoya <- umoya %>% mutate(lymphnodes = if_else(WHOlymph_w0 == "1 - Yes",  "Yes", "No"))
+var_label(umoya$lymphnodes) <- "Enlarged lymph nodes?"
+
+# Tachycardia  
+umoya <- umoya %>% mutate(tachycardia = if_else(WHOheart_w0 == 1,  "Yes", "No"))
+var_label(umoya$tachycardia) <- "Tachycardia?"
+
+# Tachypnoea  
+umoya <- umoya %>% mutate(tachypnoea = if_else(WHOtachypnoe_w0 == 1,  "Yes", "No"))
+var_label(umoya$tachypnoea) <- "Tachypnoea?"
+
+# TB contact in the last 24 months?
+umoya <- umoya %>% mutate(TBContact = if_else(umf01_ubl_tbcontact == "1 - Yes", "Yes", "No"))
+var_label(umoya$TBContact) <- "TB contact?"
+
+# Replace all missing to "No"
+for (col in c("cough_2weeks", "TBContact", "tachypnoea", "tachycardia", "lymphnodes", "nightsweats", "lethargy", "haemoptysis", "fever_2weeks", "cough_2weeks", "failuretothrive", "weightloss")) {
+  umoya[is.na(umoya[, col]), col] <- "No"
+}
+```
+
+**HIV**
+
+```{r}
+# Overall HIV status
+umoya <- umoya %>% mutate(hivstatus = if_else(hiv_fin == "1 - Positive", "HIV positive", "HIV negative"))
+var_label(umoya$hivstatus) <- "Overall HIV status - tested and reported"
+
+umoya <- umoya %>% mutate(artstatus = if_else(hiv_fin == "1 - Positive" & !is.na(bl_daterstregimen), "HIV pos already on ART", "HIV pos not on ART"))
+
+for (col in c("hivstatus")) {
+  umoya[is.na(umoya[, col]), col] <- "Unknown"
+}
+```
+
+**Severe acute malnutrition**
+
+```{r}
+umoya <- umoya %>% mutate(sam = if_else(umf01_ubl_severeacutemalnutr == "1 - Yes",  "Yes", "No"))
+umoya$sam[is.na(umoya$sam)] <- "No"
+var_label(umoya$sam) <- "Severe acute malnutrition"
+```
+
+**Danger signs**
+
+```{r}
+# Danger signs - binary
+umoya <- umoya %>% mutate(dangersigns = "No")
+var_label(umoya$dangersigns) <- "Does the child show any danger signs?"
+```
+
+*mWRD*
+
+```{r}
+# Was a respiratory sample, stool sample, or urine sample collected for mWRD?
+umoya <- umoya %>% mutate(sample = if_else(!is.na(BinaryResult),  "Yes", "No"))
+var_label(umoya$sample) <- "Was a respiratory sample, stool sample, or urine sample collected for mWRD?"
+
+# What is the Xpert result?
+umoya <- umoya %>% mutate(Xpert_result = if_else(BinaryResult == "MTB Positive",  "MTB Positive", "MTB Negative"))
+var_label(umoya$Xpert_result) <- "What is the Mtb Xpert result?"
+
+# What is the Mtb final result?
+umoya <- umoya %>% mutate(MTb_result = if_else(BinaryResult == "MTB Positive",  "MTB Positive", "MTB Negative"))
+var_label(umoya$MTb_result) <- "What is the Mtb final result?"
+
+# Replace all missing to "No"
+for (col in c("MTb_result")) {
+  umoya[is.na(umoya[, col]), col] <- "MTB Negative"
+}
+```
+
+*Chest X-Rays*
+
+```{r}
+# Cavities 
+umoya <- umoya %>% mutate(CXR_cavitations = if_else(cavities1==1,6,0))
+var_label(umoya$CXR_cavitations) <- "Did the chest X-ray show signs of cavitations?"
+
+# Enlarged lymph nodes
+umoya <- umoya %>% mutate(CXR_lymph = if_else(lymph_nodes1==1,17,0))
+var_label(umoya$CXR_lymph) <- "Did the chest X-ray show signs of lymphadenopathy?"
+
+# Opacities 
+umoya <- umoya %>% mutate(CXR_opacity = if_else(airspace_opacity1==1,5,0))
+var_label(umoya$CXR_opacity) <- "Did the chest X-ray show signs of opacities?"
+
+# Miliary pattern 
+umoya <- umoya %>% mutate(CXR_miliary = if_else(miliary1==1,15,0))
+var_label(umoya$CXR_miliary) <- "Did the chest X-ray show signs of miliary patterns?"
+
+# Effusion 
+umoya <- umoya %>% mutate(CXR_effusion = if_else(effusion1==1,8,0))
+var_label(umoya$CXR_effusion) <- "Did the chest X-ray show signs of effusion?"
+
+# Replace all to zero if missing. 
+for (col in c("CXR_effusion", "CXR_miliary", "CXR_lymph", "CXR_cavitations","CXR_opacity")) {
+  umoya[is.na(umoya[, col]), col] <- 0
+}
+```
+
+### Generate Decide-TB specific dataframes and save them for later use 
+
+```{r}
+# First generate study-identifiers
+umoya <- umoya %>% mutate(
+  study = case_when(!is.na(record_id) ~ "UMOYA"),
+  id = record_id)
+var_label(umoya$study) <- "Which study does the data originate from?"
+
+# Generate high risk group (< 2 years, CLHIV, SAM)
+umoya <- umoya %>% mutate(highrisk = case_when(
+        age < 2 | hivstatus == "Positive" | sam == "Yes" ~ "Yes",
+        age >= 2 & (hivstatus != "Positive" | is.na(hivstatus)) & (sam != "Yes" | is.na(sam)) ~ "No"))
+var_label(umoya$highrisk) <- "High risk group (< 2 years, CLHIV, SAM)?"
+```
+
+```{r}
+# Diagnostic classification UMOYA
+umoya$DiagnClass_TDA <- umoya$DiagnClass_NIH2015
+
+umoya <- umoya %>% mutate(DiagnClass_TDA = case_when(
+  DiagnClass_NIH2015=="Confirmed TB" ~ "Confirmed TB",
+  DiagnClass_NIH2015=="Unconfirmed TB" ~ "Unconfirmed TB",
+  DiagnClass_NIH2015=="Unlikely TB" ~ "Unlikely TB",
+  DiagnClass_NIH2015=="Confirmed TB-unclassified" | DiagnClass_NIH2015=="Healty Control" | DiagnClass_NIH2015=="Unclassified" | DiagnClass_NIH2015=="Unclassified- Unlikely TB" ~ "Healthy Control"))
+```
+
+```{r}
+# Treatment initiation
+umoya <- umoya %>% mutate(
+  Treatment = if_else(startedtbtreatment=="1 - Yes", "Yes", "No"))
+var_label(umoya$Treatment) <- "Treatment initiation?"
+```
+
+```{r}
+# Variable if CXR was done
+umoya <- umoya %>% mutate(
+  CXR_Done = if_else(is.na(cxr_normal1), "Missing", "CXR done"),
+  Type = "Tertiary")
+```
+
+```{r}
+umoya <- umoya[,c("study","id","age","age_cat","age_cat_ext","sex","Type","highrisk","TBContact","hivstatus","artstatus","sam","dangersigns","DiagnClass_TDA","Treatment","cough_2weeks","weightloss","fever_2weeks","lethargy","haemoptysis","nightsweats","lymphnodes","tachycardia","tachypnoea","CXR_cavitations","CXR_lymph","CXR_opacity","CXR_miliary","CXR_effusion","sample","Xpert_result","MTb_result","BinaryResult","CXR_Done")]
+```
+
+```{r}
+# Save for later use
+save(umoya,file="/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_UMOYADataset.Rda")
+save(dict_umoya,file="/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_UMOYADict.Rda")
+```
+

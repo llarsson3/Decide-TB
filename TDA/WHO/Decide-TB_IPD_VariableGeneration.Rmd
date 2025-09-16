@@ -1,0 +1,403 @@
+---
+title: "Decide-TB"
+author: "Leyla Sophie Larsson"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, fig.align = 'center')
+# chunk options https://yihui.org/knitr/options/
+```
+
+```{r clear, include=FALSE}
+rm(list = ls())
+```
+
+```{r rstan_options(auto_write = TRUE), include=FALSE}
+# Import libraries
+
+library(haven)
+library(labelled)
+library(foreign)
+library(sjlabelled)
+library(gtsummary)
+library(naniar)
+library(lubridate)
+library(lisa)
+library(ggpubr)
+library(gt)
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(ggforce)
+library(ggdist)
+library(gghalves)
+library(magrittr)
+library(RColorBrewer)
+
+theme_set(theme_light(base_size = 9))
+```
+
+```{r macros}
+# Directories
+rapaeddir <- "/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/RaPaed/"
+umoyadir <- "/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/UMOYA/"
+projdir <- "/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Code/TDA/"
+setwd(projdir)
+# Standard settings
+dotsize <- 0.4 # Set dot size
+
+```
+
+### Aim
+
+The aim of this file is to manipulate the available data to fit the variables we need to have per person to run through the WHO's treatment decision algorithms (TDA). The variables to be used for the TDA can be found in the *"Decide-TB_Codebook.xlsx"* file. This will be done separately per study before merging into one main dataset.
+
+```{r, include=FALSE}
+# Import data
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_TB-Speed_HIVDataset_Imputed.Rda")
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_TB-Speed_CohortDataset.Rda")
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_RaPaedDataset.Rda")
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_UMOYADataset.Rda")
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_TB-Speed_HIVDataset_noNS.Rda")
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_TB-Speed_HIVDataset_yesNS.Rda")
+```
+
+```{r}
+# Merge dataframes
+# Main dataframe for analysis
+data <- rbind(rapaed, umoya, cohort, hiv_imp)
+decide <- data
+# Sensitivity: no night sweats at all for HIV cohort
+data_noNS <- rbind(rapaed, umoya, cohort, hiv_no)
+decide_noNS <- data_noNS
+# Sensitivity: night sweats for everyone for HIV cohort
+data_yesNS <- rbind(rapaed, umoya, cohort, hiv_yes)
+decide_yesNS <- data_yesNS
+```
+
+*Signs and symptoms scoring*
+
+```{r}
+# Cough ≥ 2 weeks - score
+decide <- decide %>% mutate(Score_Cough = if_else(cough_2weeks == "Yes", 2, 0))
+var_label(decide$Score_Cough) <- "Score: cough more than 2 weeks?"
+
+decide <- decide %>% mutate(Score_CoughB = if_else(cough_2weeks == "Yes", 5, 0))
+var_label(decide$Score_CoughB) <- "Score: cough more than 2 weeks?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_Cough = if_else(cough_2weeks == "Yes", 2, 0))
+var_label(decide_noNS$Score_Cough) <- "Score: cough more than 2 weeks?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_CoughB = if_else(cough_2weeks == "Yes", 5, 0))
+var_label(decide_noNS$Score_CoughB) <- "Score: cough more than 2 weeks?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_Cough = if_else(cough_2weeks == "Yes", 2, 0))
+var_label(decide_yesNS$Score_Cough) <- "Score: cough more than 2 weeks?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_CoughB = if_else(cough_2weeks == "Yes", 5, 0))
+var_label(decide_yesNS$Score_CoughB) <- "Score: cough more than 2 weeks?"
+
+# Weight loss - score 
+decide <- decide %>% mutate(Score_Weight = if_else(weightloss == "Yes", 3, 0))
+var_label(decide$Score_Weight) <- "Score: weight loss?"
+
+decide <- decide %>% mutate(Score_WeightB = if_else(weightloss == "Yes", 5, 0))
+var_label(decide$Score_WeightB) <- "Score: weight loss?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_Weight = if_else(weightloss == "Yes", 3, 0))
+var_label(decide_yesNS$Score_Weight) <- "Score: weight loss?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_WeightB = if_else(weightloss == "Yes", 5, 0))
+var_label(decide_yesNS$Score_WeightB) <- "Score: weight loss?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_Weight = if_else(weightloss == "Yes", 3, 0))
+var_label(decide_noNS$Score_Weight) <- "Score: weight loss?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_WeightB = if_else(weightloss == "Yes", 5, 0))
+var_label(decide_noNS$Score_WeightB) <- "Score: weight loss?"
+
+# Fever ≥ 2 weeks - score 
+decide <- decide %>% mutate(Score_Fever = if_else(fever_2weeks == "Yes", 5, 0))
+var_label(decide$Score_Fever) <- "Score: fever more than 2 weeks?"
+
+decide <- decide %>% mutate(Score_FeverB = if_else(fever_2weeks == "Yes", 10, 0))
+var_label(decide$Score_FeverB) <- "Score: fever more than 2 weeks?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_Fever = if_else(fever_2weeks == "Yes", 5, 0))
+var_label(decide_noNS$Score_Fever) <- "Score: fever more than 2 weeks?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_FeverB = if_else(fever_2weeks == "Yes", 10, 0))
+var_label(decide_noNS$Score_FeverB) <- "Score: fever more than 2 weeks?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_Fever = if_else(fever_2weeks == "Yes", 5, 0))
+var_label(decide_yesNS$Score_Fever) <- "Score: fever more than 2 weeks?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_FeverB = if_else(fever_2weeks == "Yes", 10, 0))
+var_label(decide_yesNS$Score_FeverB) <- "Score: fever more than 2 weeks?"
+
+# Lethargy - score
+decide <- decide %>% mutate(Score_Lethargy = if_else(lethargy == "Yes", 3, 0))
+var_label(decide$Score_Lethargy) <- "Score: lethargy?"
+
+decide <- decide %>% mutate(Score_LethargyB = if_else(lethargy == "Yes", 4, 0))
+var_label(decide$Score_LethargyB) <- "Score: lethargy?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_Lethargy = if_else(lethargy == "Yes", 3, 0))
+var_label(decide_noNS$Score_Lethargy) <- "Score: lethargy?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_LethargyB = if_else(lethargy == "Yes", 4, 0))
+var_label(decide_noNS$Score_LethargyB) <- "Score: lethargy?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_Lethargy = if_else(lethargy == "Yes", 3, 0))
+var_label(decide_yesNS$Score_Lethargy) <- "Score: lethargy?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_LethargyB = if_else(lethargy == "Yes", 4, 0))
+var_label(decide_yesNS$Score_LethargyB) <- "Score: lethargy?"
+
+# Haemoptysis - score
+decide <- decide %>% mutate(Score_Haemo = if_else(haemoptysis == "Yes", 4, 0))
+var_label(decide$Score_Haemo) <- "Score: haemoptysis?"
+
+decide <- decide %>% mutate(Score_HaemoB = if_else(haemoptysis == "Yes", 9, 0))
+var_label(decide$Score_HaemoB) <- "Score: haemoptysis?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_Haemo = if_else(haemoptysis == "Yes", 4, 0))
+var_label(decide_noNS$Score_Haemo) <- "Score: haemoptysis?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_HaemoB = if_else(haemoptysis == "Yes", 9, 0))
+var_label(decide_noNS$Score_HaemoB) <- "Score: haemoptysis?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_Haemo = if_else(haemoptysis == "Yes", 4, 0))
+var_label(decide_yesNS$Score_Haemo) <- "Score: haemoptysis?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_HaemoB = if_else(haemoptysis == "Yes", 9, 0))
+var_label(decide_yesNS$Score_HaemoB) <- "Score: haemoptysis?"
+
+# Night sweats - score
+decide <- decide %>% mutate(Score_NSweats = if_else(nightsweats == "Yes", 2, 0))
+var_label(decide$Score_NSweats) <- "Score: night sweats?"
+
+decide <- decide %>% mutate(Score_NSweatsB = if_else(nightsweats == "Yes", 6, 0))
+var_label(decide$Score_NSweatsB) <- "Score: night sweats?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_NSweats = if_else(nightsweats == "Yes", 2, 0))
+var_label(decide_noNS$Score_NSweats) <- "Score: night sweats?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_NSweatsB = if_else(nightsweats == "Yes", 6, 0))
+var_label(decide_noNS$Score_NSweatsB) <- "Score: night sweats?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_NSweats = if_else(nightsweats == "Yes", 2, 0))
+var_label(decide_yesNS$Score_NSweats) <- "Score: night sweats?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_NSweatsB = if_else(nightsweats == "Yes", 6, 0))
+var_label(decide_yesNS$Score_NSweatsB) <- "Score: night sweats?"
+
+# Swollen lymph nodes - score
+decide <- decide %>% mutate(Score_LN = if_else(lymphnodes == "Yes", 4, 0))
+var_label(decide$Score_LN) <- "Score: enlarged lymph nodes?"
+
+decide <- decide %>% mutate(Score_LNB = if_else(lymphnodes == "Yes", 7, 0))
+var_label(decide$Score_LNB) <- "Score: enlarged lymph nodes?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_LN = if_else(lymphnodes == "Yes", 4, 0))
+var_label(decide_yesNS$Score_LN) <- "Score: enlarged lymph nodes?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_LNB = if_else(lymphnodes == "Yes", 7, 0))
+var_label(decide_yesNS$Score_LNB) <- "Score: enlarged lymph nodes?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_LN = if_else(lymphnodes == "Yes", 4, 0))
+var_label(decide_noNS$Score_LN) <- "Score: enlarged lymph nodes?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_LNB = if_else(lymphnodes == "Yes", 7, 0))
+var_label(decide_noNS$Score_LNB) <- "Score: enlarged lymph nodes?"
+
+# Tachycardia - score 
+decide <- decide %>% mutate(Score_Tachycardia = if_else(tachycardia== "Yes", 2, 0))
+var_label(decide$Score_Tachycardia) <- "Score: tachycardia?"
+
+decide <- decide %>% mutate(Score_TachycardiaB = if_else(tachycardia== "Yes", 4, 0))
+var_label(decide$Score_TachycardiaB) <- "Score: tachycardia?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_Tachycardia = if_else(tachycardia== "Yes", 2, 0))
+var_label(decide_yesNS$Score_Tachycardia) <- "Score: tachycardia?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_TachycardiaB = if_else(tachycardia== "Yes", 4, 0))
+var_label(decide_yesNS$Score_TachycardiaB) <- "Score: tachycardia?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_Tachycardia = if_else(tachycardia== "Yes", 2, 0))
+var_label(decide_noNS$Score_Tachycardia) <- "Score: tachycardia?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_TachycardiaB = if_else(tachycardia== "Yes", 4, 0))
+var_label(decide_noNS$Score_TachycardiaB) <- "Score: tachycardia?"
+
+# Tachypnoea - score 
+decide <- decide %>% mutate(Score_Tachypnoea = if_else(tachypnoea == "Yes", -1, 0))
+var_label(decide$Score_Tachypnoea) <- "Score: tachypnoea?"
+
+decide <- decide %>% mutate(Score_TachypnoeaB = if_else(tachypnoea == "Yes", 2, 0))
+var_label(decide$Score_TachypnoeaB) <- "Score: tachypnoea?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_Tachypnoea = if_else(tachypnoea == "Yes", -1, 0))
+var_label(decide_noNS$Score_Tachypnoea) <- "Score: tachypnoea?"
+
+decide_noNS <- decide_noNS %>% mutate(Score_TachypnoeaB = if_else(tachypnoea == "Yes", 2, 0))
+var_label(decide_noNS$Score_TachypnoeaB) <- "Score: tachypnoea?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_Tachypnoea = if_else(tachypnoea == "Yes", -1, 0))
+var_label(decide_yesNS$Score_Tachypnoea) <- "Score: tachypnoea?"
+
+decide_yesNS <- decide_yesNS %>% mutate(Score_TachypnoeaB = if_else(tachypnoea == "Yes", 2, 0))
+var_label(decide_yesNS$Score_TachypnoeaB) <- "Score: tachypnoea?"
+
+# Replace all to zero if missing. 
+for (col in c("Score_Tachypnoea", "Score_Tachycardia", "Score_LN", "Score_NSweats", "Score_Haemo", 
+              "Score_Lethargy", "Score_Fever", "Score_Weight", "Score_Cough",
+              "Score_TachypnoeaB", "Score_TachycardiaB", "Score_LNB", "Score_NSweatsB", "Score_HaemoB", 
+              "Score_LethargyB", "Score_FeverB", "Score_WeightB", "Score_CoughB")) {
+  decide[is.na(decide[, col]), col] <- 0
+  decide_noNS[is.na(decide_noNS[, col]), col] <- 0
+  decide_yesNS[is.na(decide_noNS[, col]), col] <- 0
+}
+
+```
+
+*Summative*
+
+```{r}
+# Sensitivity analysis all microbiology is negative so they all flow through
+#decide <- decide %>% mutate(MTb_result="MTB Negative")
+```
+
+```{r}
+# decide
+decide <- decide %>% mutate(SumA = Score_Cough + Score_Weight + Score_Fever + Score_Lethargy + Score_Haemo + Score_NSweats + Score_LN + Score_Tachycardia + Score_Tachypnoea)
+var_label(decide$SumA) <- "Sum of the signs and symptoms"
+
+decide <- decide %>% mutate(Sum_B = Score_CoughB + Score_WeightB + Score_FeverB + Score_LethargyB + Score_HaemoB + Score_NSweatsB + Score_LNB + Score_TachycardiaB + Score_TachypnoeaB)
+var_label(decide$Sum_B) <- "Sum of the signs and symptoms"
+
+decide <- decide %>% mutate(SumB = CXR_miliary + CXR_effusion + CXR_lymph + CXR_cavitations + CXR_opacity)
+var_label(decide$SumB) <- "Sum of the chest X-ray features"
+
+decide <- decide %>% mutate(Sum = SumA + SumB)
+var_label(decide$Sum) <- "Overall sum of the signs and symptoms and chest X-ray features"
+
+decide <- decide %>% mutate(Sum_Bin = if_else(Sum>10, ">10","≤10"))
+var_label(decide$Sum_Bin) <- "Overall sum of the signs and symptoms and chest X-ray features (binary)"
+
+decide <- decide %>% mutate(Sum_B_Bin = if_else(Sum_B>10, ">10","≤10"))
+var_label(decide$Sum_B_Bin) <- "Overall sum of the signs and symptoms and chest X-ray features (binary)"
+
+decide <- decide %>% 
+  mutate(TxInitiation = case_when(
+        Sum > 10 | TBContact == "Yes" | MTb_result == "MTB Positive"  ~ "Yes")) %>% 
+  mutate(TxInitiation = if_else(is.na(TxInitiation), "No", TxInitiation)) %>% 
+  mutate(TxInitiation_num = if_else(TxInitiation == "Yes", 1, 0))
+var_label(decide$TxInitiation) <- "Initiate appropriate treatment"
+
+decide <- decide %>% 
+  mutate(TxInitiation_B = case_when(
+        Sum_B > 10 | TBContact == "Yes" | MTb_result == "MTB Positive"  ~ "Yes")) %>% 
+  mutate(TxInitiation_B = if_else(is.na(TxInitiation_B), "No", TxInitiation_B)) %>% 
+  mutate(TxInitiation_B_num = if_else(TxInitiation_B == "Yes", 1, 0))
+var_label(decide$TxInitiation_B) <- "Initiate appropriate treatment"
+
+# decide_noNS
+decide_noNS <- decide_noNS %>% mutate(SumA = Score_Cough + Score_Weight + Score_Fever + Score_Lethargy + Score_Haemo + Score_NSweats + Score_LN + Score_Tachycardia + Score_Tachypnoea)
+var_label(decide_noNS$SumA) <- "Sum of the signs and symptoms"
+
+decide_noNS <- decide_noNS %>% mutate(Sum_B = Score_CoughB + Score_WeightB + Score_FeverB + Score_LethargyB + Score_HaemoB + Score_NSweatsB + Score_LNB + Score_TachycardiaB + Score_TachypnoeaB)
+var_label(decide_noNS$Sum_B) <- "Sum of the signs and symptoms"
+
+decide_noNS <- decide_noNS %>% mutate(SumB = CXR_miliary + CXR_effusion + CXR_lymph + CXR_cavitations + CXR_opacity)
+var_label(decide_noNS$SumB) <- "Sum of the chest X-ray features"
+
+decide_noNS <- decide_noNS %>% mutate(Sum = SumA + SumB)
+var_label(decide_noNS$Sum) <- "Overall sum of the signs and symptoms and chest X-ray features"
+
+decide_noNS <- decide_noNS %>% mutate(Sum_Bin = if_else(Sum>10, ">10","≤10"))
+var_label(decide_noNS$Sum_Bin) <- "Overall sum of the signs and symptoms and chest X-ray features (binary)"
+
+decide_noNS <- decide_noNS %>% mutate(Sum_B_Bin = if_else(Sum_B>10, ">10","≤10"))
+var_label(decide_noNS$Sum_B_Bin) <- "Overall sum of the signs and symptoms and chest X-ray features (binary)"
+
+decide_noNS <- decide_noNS %>% 
+  mutate(TxInitiation = case_when(
+        Sum > 10 | TBContact == "Yes" | MTb_result == "MTB Positive"  ~ "Yes")) %>% 
+  mutate(TxInitiation = if_else(is.na(TxInitiation), "No", TxInitiation)) %>% 
+  mutate(TxInitiation_num = if_else(TxInitiation == "Yes", 1, 0))
+var_label(decide_noNS$TxInitiation) <- "Initiate appropriate treatment"
+
+decide_noNS <- decide_noNS %>% 
+  mutate(TxInitiation_B = case_when(
+        Sum_B > 10 | TBContact == "Yes" | MTb_result == "MTB Positive"  ~ "Yes")) %>% 
+  mutate(TxInitiation_B = if_else(is.na(TxInitiation_B), "No", TxInitiation_B)) %>% 
+  mutate(TxInitiation_B_num = if_else(TxInitiation_B == "Yes", 1, 0))
+var_label(decide_noNS$TxInitiation_B) <- "Initiate appropriate treatment"
+
+# decide_yesNS
+decide_yesNS <- decide_yesNS %>% mutate(SumA = Score_Cough + Score_Weight + Score_Fever + Score_Lethargy + Score_Haemo + Score_NSweats + Score_LN + Score_Tachycardia + Score_Tachypnoea)
+var_label(decide_yesNS$SumA) <- "Sum of the signs and symptoms"
+
+decide_yesNS <- decide_yesNS %>% mutate(Sum_B = Score_CoughB + Score_WeightB + Score_FeverB + Score_LethargyB + Score_HaemoB + Score_NSweatsB + Score_LNB + Score_TachycardiaB + Score_TachypnoeaB)
+var_label(decide_yesNS$Sum_B) <- "Sum of the signs and symptoms"
+
+decide_yesNS <- decide_yesNS %>% mutate(SumB = CXR_miliary + CXR_effusion + CXR_lymph + CXR_cavitations + CXR_opacity)
+var_label(decide_yesNS$SumB) <- "Sum of the chest X-ray features"
+
+decide_yesNS <- decide_yesNS %>% mutate(Sum = SumA + SumB)
+var_label(decide_yesNS$Sum) <- "Overall sum of the signs and symptoms and chest X-ray features"
+
+decide_yesNS <- decide_yesNS %>% mutate(Sum_Bin = if_else(Sum>10, ">10","≤10"))
+var_label(decide_yesNS$Sum_Bin) <- "Overall sum of the signs and symptoms and chest X-ray features (binary)"
+
+decide_yesNS <- decide_yesNS %>% mutate(Sum_B_Bin = if_else(Sum_B>10, ">10","≤10"))
+var_label(decide_yesNS$Sum_B_Bin) <- "Overall sum of the signs and symptoms and chest X-ray features (binary)"
+
+decide_yesNS <- decide_yesNS %>% 
+  mutate(TxInitiation = case_when(
+        Sum > 10 | TBContact == "Yes" | MTb_result == "MTB Positive"  ~ "Yes")) %>% 
+  mutate(TxInitiation = if_else(is.na(TxInitiation), "No", TxInitiation)) %>% 
+  mutate(TxInitiation_num = if_else(TxInitiation == "Yes", 1, 0))
+var_label(decide_yesNS$TxInitiation) <- "Initiate appropriate treatment"
+
+decide_yesNS <- decide_yesNS %>% 
+  mutate(TxInitiation_B = case_when(
+        Sum_B > 10 | TBContact == "Yes" | MTb_result == "MTB Positive"  ~ "Yes")) %>% 
+  mutate(TxInitiation_B = if_else(is.na(TxInitiation_B), "No", TxInitiation_B)) %>% 
+  mutate(TxInitiation_B_num = if_else(TxInitiation_B == "Yes", 1, 0))
+var_label(decide_yesNS$TxInitiation_B) <- "Initiate appropriate treatment"
+```
+
+```{r}
+# Make datasets excluding based on age and EPTB and if UMOYA is a healthy control
+decide <- subset(decide, DiagnClass_TDA!="Healthy Control" & !is.na(DiagnClass_TDA))
+decide <- subset(decide, !is.na(age_cat))
+decide_sub10 <- subset(decide, age_cat!="> 10 years")
+
+decide_noNS <- subset(decide_noNS, DiagnClass_TDA!="Healthy Control" & !is.na(DiagnClass_TDA))
+decide_noNS <- subset(decide_noNS, !is.na(age_cat))
+decide_noNS_sub10 <- subset(decide_noNS, age_cat!="> 10 years")
+
+decide_yesNS <- subset(decide_yesNS, DiagnClass_TDA!="Healthy Control" & !is.na(DiagnClass_TDA))
+decide_yesNS <- subset(decide_yesNS, !is.na(age_cat))
+decide_yesNS_sub10 <- subset(decide_yesNS, age_cat!="> 10 years")
+```
+
+```{r}
+# Save for later use
+save(decide,file="/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_Dataset.Rda")
+save(decide_sub10,file="/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_Dataset_Sub10.Rda")
+
+save(decide_noNS,file="/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_Dataset_noNS.Rda")
+save(decide_noNS_sub10,file="/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_Dataset_noNS_Sub10.Rda")
+
+save(decide_yesNS,file="/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_Dataset_yesNS.Rda")
+save(decide_yesNS_sub10,file="/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_Dataset_yesNS_Sub10.Rda")
+```

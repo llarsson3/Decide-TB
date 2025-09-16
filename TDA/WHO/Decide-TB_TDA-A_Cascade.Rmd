@@ -1,0 +1,1252 @@
+---
+title: "Decide-TB - TDA A"
+author: "Leyla Sophie Larsson"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 4
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, fig.align = 'center')
+# chunk options https://yihui.org/knitr/options/
+```
+
+```{r clear, include=FALSE}
+rm(list = ls())
+```
+
+```{r rstan_options(auto_write = TRUE), include=FALSE}
+# Import libraries
+
+library(haven)
+library(foreign)
+library(gtsummary)
+library(naniar)
+library(lubridate)
+library(lisa)
+library(ggpubr)
+library(gt)
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(RColorBrewer)
+library(hrbrthemes)
+
+theme_set(theme_light(base_size = 9))
+pal2 <- c("#193300", "#336600", "#4C9900", "#66CC00","#B2FF66","#E5FFCC")
+#pal <- c("#2196F3", "#FF8C00","#9370DB", "#4C9900", "#104E8B", "#26A69A")
+pal <- c("#B71C1C", "#0D47A1", "#2E7D32", "#212121", "#FF8C00", "grey")
+```
+
+```{r macros}
+# Directories
+projdir <- "/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Code/TDA/WHO/"
+datadir <- "/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/"
+setwd(projdir)
+# Standard settings
+dotsize <- 0.4 # Set dot size
+```
+
+```{r, include=FALSE}
+# Import data
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_Dataset.Rda")
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_DatasetDict.Rda")
+```
+
+**TDA**
+
+```{r}
+# Generate CD and CRS variables for later
+decide <- decide %>% mutate(CD = case_when(
+  Treatment == "Yes" ~ 1,
+  Treatment == "No" ~ 0
+))
+
+decide <- decide %>% mutate(CRS = case_when(
+  DiagnClass_TDA == "Confirmed TB" | DiagnClass_TDA == "Unconfirmed TB" | DiagnClass_TDA == "Confirmed" | DiagnClass_TDA == "Unconfirmed" ~ 1,
+  DiagnClass_TDA == "Unlikely TB" | DiagnClass_TDA == "Unlikely" ~ 0
+))
+```
+
+```{r}
+# Create variables to help reduce clutter
+set.seed(1234)
+decide <- decide %>% mutate(
+  LR_Random0 = ifelse(highrisk == "Yes", NA, "No"),
+  LR_Random25 = ifelse(highrisk == "Yes", NA, ifelse(runif(n()) <= 0.25, "Yes", "No")),
+  LR_Random50 = ifelse(highrisk == "Yes", NA, ifelse(runif(n()) <= 0.50, "Yes", "No")),
+  LR_Random75 = ifelse(highrisk == "Yes", NA, ifelse(runif(n()) <= 0.75, "Yes", "No")),
+  LR_Random100 = ifelse(highrisk == "Yes", NA, "Yes"))
+
+decide$age_cat_ext2 <- cut(decide$age,
+                 breaks=c(0,2,5,10,15),
+                 labels=c('< 2 years', '2 - < 5 years', '5 - 10 years', '> 10 years'))
+decide$age_cat_ext2 <- factor(decide$age_cat_ext2, levels = c('< 2 years', '2 - < 5 years', '5 - 10 years', '> 10 years'))
+
+# Create sub datasets with restrictions
+decide <- subset(decide, dangersigns == "No")
+decide$DiagnClass_TDA <- factor(decide$DiagnClass_TDA, levels = c("Confirmed TB","Unconfirmed TB", "Unlikely TB"))
+decide <- decide %>% mutate(Sum_required = if_else(TBContact == "No" & dangersigns == "No" & MTb_result == "MTB Negative",  "Yes", "No"))
+
+less2 <- subset(decide, age_cat == "< 2 years")
+twoto10 <- subset(decide, age_cat == "2 - 10 years")
+more10 <- subset(decide, age_cat == "> 10 years")
+sub10 <- subset(decide, age_cat == "< 2 years" | age_cat == "2 - 10 years")
+
+rapaed_sub10 <- subset(sub10, study=="RaPaed")
+umoya_sub10 <- subset(sub10, study=="UMOYA")
+hiv_sub10 <- subset(sub10, study=="HIV")
+cohort_sub10 <- subset(sub10, study=="Cohort")
+
+highrisk <- subset(sub10, highrisk=="Yes")
+lowrisk <- subset(sub10, highrisk=="No")
+```
+
+Children who are low risk (i.e., over two years old, not living with HIV, and without severe acute malnutrition) are recommended to be treated first for most likely non-TB condition(s) and then to be followed up in 1-2 weeks. If the symptoms persist and/or are worsening, then it is recommended they re-enter the cascade. Otherwise they exit. Considering it is difficult to model this in our setting as we do not have the data for the 1-2 week follow up, nor were our children treated in the meantime, we will do a simulation study:
+
+All children who are low risk and who are classified as unlikely TB in RaPaed will exit at this stage. Those who end up with a TB diagnosis (confirmed or unconfirmed) will go back in with varying proportions (0%, 25%, 50%, 75%, 100%). This is called the "James Manoeuvre". 
+
+## WHO TDA A
+
+**All children (UMOYA and RaPaed and TB-Speed HIV and TB-Speed Decentralisation + HIV cohort)**
+
+```{r}
+# Prep data for flow chart 
+library(dplyr)
+library(tidyverse)
+
+a <- subset(sub10, !is.na("PersID")) %>% summarise(a = n()) 
+b <- subset(sub10, dangersigns == "Yes") %>% summarise(b = n())
+c <- subset(sub10, dangersigns == "No") %>% summarise(c = n())
+d <- subset(sub10, highrisk == "Yes" & dangersigns == "No") %>% summarise(d = n())
+e <- subset(sub10, highrisk == "No" & dangersigns == "No") %>% summarise(e = n())
+f <- subset(sub10, (sample == "Yes" | is.na(sample)) & dangersigns == "No") %>% summarise(f = n())
+g <- subset(sub10, MTb_result == "MTB Positive" & dangersigns == "No") %>% summarise(g = n())
+h <- subset(sub10, MTb_result == "MTB Negative" & dangersigns == "No") %>% summarise(h = n())
+i <- subset(sub10, TBContact == "Yes" & MTb_result == "MTB Negative" & dangersigns == "No") %>% summarise(i = n())
+j <- subset(sub10, TBContact == "No" & MTb_result == "MTB Negative" & dangersigns == "No") %>% summarise(j = n())
+k <- subset(sub10, Sum > 10 & MTb_result == "MTB Negative" & TBContact == "No" & dangersigns == "No") %>% summarise(k = n())
+l <- subset(sub10, Sum <= 10 & MTb_result == "MTB Negative" & TBContact == "No" & dangersigns == "No") %>% summarise(l = n())
+m <- subset(sub10, TxInitiation == "Yes" & dangersigns == "No") %>% summarise(m = n())
+
+```
+
+```{r}
+library(consort)
+library(labelled)
+library(DiagrammeR)
+
+# Define some sample data
+data <- list(a=a$a, b=b$b, c=c$c, d=d$d, e=e$e, f=f$f, g=g$g, h=h$h, i=i$i, j=j$j, k=k$k, l=l$l, m=m$m)
+
+DiagrammeR::grViz("
+digraph graph_eos {
+
+graph [layout = dot]
+
+# node definitions with substituted label text
+node [fontname = Helvetica, fontcolor = darkslategray,
+        shape = rectangle, fixedsize = false, width = 2,
+        style = filled, fillcolor = AliceBlue]
+a [label = '@@1']
+b [label = '@@2']
+c [label = '@@3']
+d [label = '@@4']
+e [label = '@@5']
+f [label = '@@6']
+g [label = '@@7']
+h [label = '@@8']
+i [label = '@@9']
+j [label = '@@10']
+k [label = '@@11']
+l [label = '@@12']
+m [label = '@@13']
+
+a -> b;
+a -> c -> d -> f;
+c -> e -> f -> g -> m;
+f -> h -> i -> m;
+h -> j -> k -> m;
+j -> l;
+
+}
+
+[1]: paste0('Number children with symptoms suggestive of TB (n = ', data$a, ')')
+[2]: paste0('Presence of danger signs requiring urgent medical care (n = ', data$b, ')')
+[3]: paste0('No danger signs (n = ', data$c, ')')
+[4]: paste0('High risk (n = ', data$d, ')')
+[5]: paste0('Low risk (n = ', data$e, ')')
+[6]: paste0('Respiratory/stool/urine sample collected for mWRD (n = ', data$f, ')')
+[7]: paste0('mWRD detected Mycobacterium tuberculosis (n = ', data$g, ')')
+[8]: paste0('mWRD did not detect Mycobacterium tuberculosis (or not done) (n = ', data$h, ')')
+[9]: paste0('Close or household TB contact in previous 12 months (n = ', data$i, ')')
+[10]: paste0('No TB contact in last 12 months (n = ', data$j, ')')
+[11]: paste0('Sum A + Sum B > 10 (n = ', data$k, ')')
+[12]: paste0('Sum A + Sum B ≤ 10 (n = ', data$l, ')')
+[13]: paste0('Appropriate TB treatment initiated (n = ', data$m, ')')
+")
+
+```
+
+```{r, include=FALSE}
+rm(a,b,c,d,e,f,g,h,i,j,k,l,m)
+```
+
+```{r}
+# Diagnostic classifications by stage
+# 1. Microbiology
+distribution_mtb_positive <- prop.table(table(sub10$DiagnClass_TDA[sub10$BinaryResult == "MTB Positive"]))
+print("Distribution for Mtb positives")
+print(distribution_mtb_positive)
+
+# 2. TB contact
+distribution_mtb_negative_contact_yes <- prop.table(table(sub10$DiagnClass_TDA[sub10$BinaryResult == "MTB Negative" & sub10$TBContact == "Yes"]))
+print("Distribution for TB contacts:")
+print(distribution_mtb_negative_contact_yes)
+
+# 3. Score
+distribution_mtb_negative_contact_no_sum_bin_yes <- prop.table(table(sub10$DiagnClass_TDA[sub10$BinaryResult == "MTB Negative" & sub10$TBContact == "No" & sub10$Sum_Bin == ">10"]))
+print("Distribution for Sum > 10")
+print(distribution_mtb_negative_contact_no_sum_bin_yes)
+
+# 4. Treatment initiation
+distribution_txinit <- prop.table(table(sub10$DiagnClass_TDA[sub10$TxInitiation == "Yes"]))
+print("Distribution for treatment initiation")
+print(distribution_txinit)
+```
+
+## Distributions
+
+``` {r, include=FALSE}
+# function for the raincloud plots later. this function if you look at it calculates the median
+add_sample <- function(x){
+   return(c(y = max(x) + .025, 
+            label = length(x)))
+}
+```
+
+#### Score distribution if the child made it to the score section (excl. Mtb+ and TBContact+)
+
+##### Overall (if they made to score section vs. not)
+
+``` {r}
+library(colorspace)
+
+sub10 %>% 
+  filter(!is.na(Sum_required)) %>%
+  group_by(Sum_required) %>% 
+  ggplot(aes(x = fct_rev(Sum_required), y = Sum)) + 
+  ggdist::stat_halfeye(
+    aes(color = Sum_required,
+        fill = after_scale(lighten(color, .5))),
+    adjust = .4, 
+    width = .5, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) +
+  geom_point(
+    aes(color = Sum_required,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    fill = "white",
+    shape = 21,
+    stroke = .4,
+    size = 2,
+    position = position_jitter(seed = 1, width = .12)
+  ) + 
+  geom_point(
+    aes(fill = Sum_required),
+    color = "transparent",
+    shape = 21,
+    stroke = .4,
+    size = 1,
+    alpha = .2,
+    position = position_jitter(seed = 1, width = .12)
+  ) +
+  geom_boxplot(
+    aes(color = Sum_required,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .22, 
+    outlier.shape = NA
+  ) +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  labs(
+    x = NULL,
+    y = "Score"
+  ) + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  annotate("text", x=2.5, y=-4.5, label= "*", color="white") +
+  stat_summary(
+    geom = "text",    
+    fun.data = add_sample,
+    aes(label = paste("n =", ..label..),
+        color = Sum_required,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Condensed",
+    size = 3,
+    hjust = 1,
+    vjust = 3
+  ) + 
+  stat_summary(
+    geom = "text",
+    fun = "median",
+    aes(label = round(..y.., 2),
+        color = Sum_required,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Mono",
+    fontface = "bold",
+    size = 4,
+    vjust = -2.5
+  )
+```
+
+##### Clinician decision to treat
+
+``` {r}
+library(colorspace)
+
+sub10 %>% 
+  filter(Sum_required=="Yes") %>%
+  group_by(Treatment) %>% 
+  ggplot(aes(x = fct_rev(Treatment), y = Sum)) + 
+  ggdist::stat_halfeye(
+    aes(color = Treatment,
+        fill = after_scale(lighten(color, .5))),
+    adjust = .4, 
+    width = .5, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) +
+  geom_point(
+    aes(color = Treatment,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    fill = "white",
+    shape = 21,
+    stroke = .4,
+    size = 2,
+    position = position_jitter(seed = 1, width = .12)
+  ) + 
+  geom_point(
+    aes(fill = Treatment),
+    color = "transparent",
+    shape = 21,
+    stroke = .4,
+    size = 1,
+    alpha = .2,
+    position = position_jitter(seed = 1, width = .12)
+  ) +
+  geom_boxplot(
+    aes(color = Treatment,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .22, 
+    outlier.shape = NA
+  ) +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  labs(
+    x = NULL,
+    y = "Score",
+    title = "Distribution of overall sum (Sum A + Sum B) by clinician treatment decision",
+  ) + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  annotate("text", x=2.5, y=-4.5, label= "*", color="white") +
+  stat_summary(
+    geom = "text",    
+    fun.data = add_sample,
+    aes(label = paste("n =", ..label..),
+        color = Treatment,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Condensed",
+    size = 3,
+    hjust = 1,
+    vjust = 3
+  ) + 
+  stat_summary(
+    geom = "text",
+    fun = "median",
+    aes(label = round(..y.., 2),
+        color = Treatment,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Mono",
+    fontface = "bold",
+    size = 4,
+    vjust = -2.5
+  )
+```
+
+##### By diagnostic classification
+
+``` {r}
+library(colorspace)
+
+sub10 %>% 
+  filter(Sum_required == "Yes") %>%
+  group_by(DiagnClass_TDA) %>% 
+  ggplot(aes(x = fct_rev(DiagnClass_TDA), y = Sum)) + 
+  ggdist::stat_halfeye(
+    aes(color = DiagnClass_TDA,
+        fill = after_scale(lighten(color, .5))),
+    adjust = .4, 
+    width = .5, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) +
+  geom_point(
+    aes(color = DiagnClass_TDA,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    fill = "white",
+    shape = 21,
+    stroke = .4,
+    size = 2,
+    position = position_jitter(seed = 1, width = .12)
+  ) + 
+  geom_point(
+    aes(fill = DiagnClass_TDA),
+    color = "transparent",
+    shape = 21,
+    stroke = .4,
+    size = 1,
+    alpha = .2,
+    position = position_jitter(seed = 1, width = .12)
+  ) +
+  geom_boxplot(
+    aes(color = DiagnClass_TDA,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .22, 
+    outlier.shape = NA
+  ) +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  labs(
+    x = NULL,
+    y = "Score",
+    title = "Distribution of overall sum (Sum A + Sum B) by diagnostic classification",
+  ) + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  annotate("text", x=2.5, y=-4.5, label= "*", color="white") +
+  stat_summary(
+    geom = "text",    
+    fun.data = add_sample,
+    aes(label = paste("n =", ..label..),
+        color = DiagnClass_TDA,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Condensed",
+    size = 3,
+    hjust = 1,
+    vjust = 3
+  ) + 
+  stat_summary(
+    geom = "text",
+    fun = "median",
+    aes(label = round(..y.., 2),
+        color = DiagnClass_TDA,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Mono",
+    fontface = "bold",
+    size = 4,
+    vjust = -2.5
+  )
+```
+
+##### By study
+
+``` {r}
+library(colorspace)
+
+sub10 %>% 
+  filter(Sum_required == "Yes") %>%
+  group_by(study) %>% 
+  ggplot(aes(x = fct_rev(study), y = Sum)) + 
+  ggdist::stat_halfeye(
+    aes(color = study,
+        fill = after_scale(lighten(color, .5))),
+    adjust = .4, 
+    width = .5, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) +
+  geom_point(
+    aes(color = study,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    fill = "white",
+    shape = 21,
+    stroke = .4,
+    size = 2,
+    position = position_jitter(seed = 1, width = .12)
+  ) + 
+  geom_point(
+    aes(fill = study),
+    color = "transparent",
+    shape = 21,
+    stroke = .4,
+    size = 1,
+    alpha = .2,
+    position = position_jitter(seed = 1, width = .12)
+  ) +
+  geom_boxplot(
+    aes(color = study,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .22, 
+    outlier.shape = NA
+  ) +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  labs(
+    x = NULL,
+    y = "Score",
+    title = "Distribution of overall sum (Sum A + Sum B) by study",
+  ) + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  annotate("text", x=2.5, y=-4.5, label= "*", color="white") +
+  stat_summary(
+    geom = "text",    
+    fun.data = add_sample,
+    aes(label = paste("n =", ..label..),
+        color = study,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Condensed",
+    size = 3,
+    hjust = 1,
+    vjust = 3
+  ) + 
+  stat_summary(
+    geom = "text",
+    fun = "median",
+    aes(label = round(..y.., 2),
+        color = study,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Mono",
+    fontface = "bold",
+    size = 4,
+    vjust = -2.5
+  )
+```
+
+##### By age
+
+``` {r}
+library(colorspace)
+
+sub10 %>% 
+  filter(Sum_required == "Yes") %>%
+  group_by(age_cat_ext) %>% 
+  ggplot(aes(x = fct_rev(age_cat_ext), y = Sum)) + 
+  ggdist::stat_halfeye(
+    aes(color = age_cat_ext,
+        fill = after_scale(lighten(color, .5))),
+    adjust = .4, 
+    width = .5, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) +
+  geom_point(
+    aes(color = age_cat_ext,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    fill = "white",
+    shape = 21,
+    stroke = .4,
+    size = 2,
+    position = position_jitter(seed = 1, width = .12)
+  ) + 
+  geom_point(
+    aes(fill = age_cat_ext),
+    color = "transparent",
+    shape = 21,
+    stroke = .4,
+    size = 1,
+    alpha = .2,
+    position = position_jitter(seed = 1, width = .12)
+  ) +
+  geom_boxplot(
+    aes(color = age_cat_ext,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .22, 
+    outlier.shape = NA
+  ) +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  labs(
+    x = NULL,
+    y = "Score",
+    title = "Distribution of overall sum (Sum A + Sum B) by age category",
+  ) + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  annotate("text", x=2.5, y=-4.5, label= "*", color="white") +
+  stat_summary(
+    geom = "text",    
+    fun.data = add_sample,
+    aes(label = paste("n =", ..label..),
+        color = age_cat_ext,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Condensed",
+    size = 3,
+    hjust = 1,
+    vjust = 3
+  ) + 
+  stat_summary(
+    geom = "text",
+    fun = "median",
+    aes(label = round(..y.., 2),
+        color = age_cat_ext,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Mono",
+    fontface = "bold",
+    size = 4,
+    vjust = -2.5
+  )
+```
+
+##### By nutritional status
+
+``` {r}
+library(colorspace)
+
+sub10 %>% 
+  filter(Sum_required == "Yes") %>%
+  group_by(sam) %>% 
+  ggplot(aes(x = fct_rev(sam), y = Sum)) + 
+  ggdist::stat_halfeye(
+    aes(color = sam,
+        fill = after_scale(lighten(color, .5))),
+    adjust = .4, 
+    width = .5, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) +
+  geom_point(
+    aes(color = sam,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    fill = "white",
+    shape = 21,
+    stroke = .4,
+    size = 2,
+    position = position_jitter(seed = 1, width = .12)
+  ) + 
+  geom_point(
+    aes(fill = sam),
+    color = "transparent",
+    shape = 21,
+    stroke = .4,
+    size = 1,
+    alpha = .2,
+    position = position_jitter(seed = 1, width = .12)
+  ) +
+  geom_boxplot(
+    aes(color = sam,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .22, 
+    outlier.shape = NA
+  ) +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  labs(
+    x = NULL,
+    y = "Score",
+    title = "Distribution of overall sum (Sum A + Sum B) by nutritional status (SAM)",
+  ) + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  annotate("text", x=2.5, y=-4.5, label= "*", color="white") +
+  stat_summary(
+    geom = "text",    
+    fun.data = add_sample,
+    aes(label = paste("n =", ..label..),
+        color = sam,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Condensed",
+    size = 3,
+    hjust = 1,
+    vjust = 3
+  ) + 
+  stat_summary(
+    geom = "text",
+    fun = "median",
+    aes(label = round(..y.., 2),
+        color = sam,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Mono",
+    fontface = "bold",
+    size = 4,
+    vjust = -2.5
+  )
+```
+
+##### By HIV status
+
+``` {r}
+library(colorspace)
+
+sub10 %>% 
+  filter(Sum_required == "Yes") %>%
+  group_by(hivstatus) %>% 
+  ggplot(aes(x = fct_rev(hivstatus), y = Sum)) + 
+  ggdist::stat_halfeye(
+    aes(color = hivstatus,
+        fill = after_scale(lighten(color, .5))),
+    adjust = .4, 
+    width = .5, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) +
+  geom_point(
+    aes(color = hivstatus,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    fill = "white",
+    shape = 21,
+    stroke = .4,
+    size = 2,
+    position = position_jitter(seed = 1, width = .12)
+  ) + 
+  geom_point(
+    aes(fill = hivstatus),
+    color = "transparent",
+    shape = 21,
+    stroke = .4,
+    size = 1,
+    alpha = .2,
+    position = position_jitter(seed = 1, width = .12)
+  ) +
+  geom_boxplot(
+    aes(color = hivstatus,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .22, 
+    outlier.shape = NA
+  ) +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  labs(
+    x = NULL,
+    y = "Score",
+    title = "Distribution of overall sum (Sum A + Sum B) by HIV status",
+  ) + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  annotate("text", x=2.5, y=-4.5, label= "*", color="white") +
+  stat_summary(
+    geom = "text",    
+    fun.data = add_sample,
+    aes(label = paste("n =", ..label..),
+        color = hivstatus,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Condensed",
+    size = 3,
+    hjust = 1,
+    vjust = 3
+  ) + 
+  stat_summary(
+    geom = "text",
+    fun = "median",
+    aes(label = round(..y.., 2),
+        color = hivstatus,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Mono",
+    fontface = "bold",
+    size = 4,
+    vjust = -2.5
+  )
+```
+
+### Diagnostic accuracy
+
+```{r}
+sub10 <- sub10 %>% mutate(
+  OutcomeScore = case_when(Sum > 10 ~ 1, Sum <= 10 ~ 0),
+  OutcomeTDA = if_else(TxInitiation == "Yes", 1, 0))
+```
+
+Table for diagnostic accuracy overall and by subgroup
+
+```{r}
+sub10 <- sub10 %>% mutate(Overall = "Overall")
+```
+
+```{r}
+# Generate a dataframe just for those who make it to the score section
+sub10_sumreq <- subset(sub10, Sum_required=="Yes")
+```
+
+```{r}
+# Function to calculate Wilson score interval for binomial proportions
+wilson_ci <- function(x, n, conf.level = 0.95) {
+  p_hat <- x / n
+  z <- qnorm(1 - (1 - conf.level) / 2)
+  lower <- (2 * n * p_hat + z^2 - z * sqrt(z^2 - 1 / n + 4 * n * p_hat * (1 - p_hat) + (4 * p_hat - 2)))/(2 * (n + z^2))
+  upper <- (2 * n * p_hat + z^2 + z * sqrt(z^2 - 1 / n + 4 * n * p_hat * (1 - p_hat) - (4 * p_hat - 2)))/(2 * (n + z^2))
+  return(c(lower, upper))
+}
+
+# Define a function to compute sensitivity and specificity
+compute_accuracy <- function(TP, FP, TN, FN) {
+  sensitivity <- TP / (TP + FN) * 100
+  specificity <- TN / (TN + FP) * 100
+  return(c(TP = TP, FP = FP, TN = TN, FN = FN, Sensitivity = sensitivity, Specificity = specificity))
+}
+```
+
+```{r}
+# CRS
+# Score
+# Define a function to compute accuracy for each subgroup
+compute_score_accuracy_crs <- function(data, subgroup) {
+  groups <- unique(data[[subgroup]])
+  results <- list()
+  for (group in groups) {
+    sub_data <- data[data[[subgroup]] == group, ]
+    TP <- sum(sub_data$OutcomeScore == 1 & sub_data$CRS == 1)
+    FP <- sum(sub_data$OutcomeScore == 1 & sub_data$CRS == 0)
+    TN <- sum(sub_data$OutcomeScore == 0 & sub_data$CRS == 0)
+    FN <- sum(sub_data$OutcomeScore == 0 & sub_data$CRS == 1)
+    results[[as.character(group)]] <- compute_accuracy(TP, FP, TN, FN)
+  }
+  return(results)
+}
+
+# TDA
+# Define a function to compute accuracy for each subgroup
+compute_TDA_accuracy_crs <- function(data, subgroup) {
+  groups <- unique(data[[subgroup]])
+  results <- list()
+  for (group in groups) {
+    sub_data <- data[data[[subgroup]] == group, ]
+    TP <- sum(sub_data$OutcomeTDA == 1 & sub_data$CRS == 1)
+    FP <- sum(sub_data$OutcomeTDA == 1 & sub_data$CRS == 0)
+    TN <- sum(sub_data$OutcomeTDA == 0 & sub_data$CRS == 0)
+    FN <- sum(sub_data$OutcomeTDA == 0 & sub_data$CRS == 1)
+    results[[as.character(group)]] <- compute_accuracy(TP, FP, TN, FN)
+  }
+  return(results)
+}
+
+# CD
+# Score
+# Define a function to compute accuracy for each subgroup
+compute_score_accuracy_cd <- function(data, subgroup) {
+  groups <- unique(data[[subgroup]])
+  results <- list()
+  for (group in groups) {
+    sub_data <- data[data[[subgroup]] == group, ]
+    TP <- sum(sub_data$OutcomeScore == 1 & sub_data$CD == 1)
+    FP <- sum(sub_data$OutcomeScore == 1 & sub_data$CD == 0)
+    TN <- sum(sub_data$OutcomeScore == 0 & sub_data$CD == 0)
+    FN <- sum(sub_data$OutcomeScore == 0 & sub_data$CD == 1)
+    results[[as.character(group)]] <- compute_accuracy(TP, FP, TN, FN)
+  }
+  return(results)
+}
+
+# TDA
+# Define a function to compute accuracy for each subgroup
+compute_TDA_accuracy_cd <- function(data, subgroup) {
+  groups <- unique(data[[subgroup]])
+  results <- list()
+  for (group in groups) {
+    sub_data <- data[data[[subgroup]] == group, ]
+    TP <- sum(sub_data$OutcomeTDA == 1 & sub_data$CD == 1)
+    FP <- sum(sub_data$OutcomeTDA == 1 & sub_data$CD == 0)
+    TN <- sum(sub_data$OutcomeTDA == 0 & sub_data$CD == 0)
+    FN <- sum(sub_data$OutcomeTDA == 0 & sub_data$CD == 1)
+    results[[as.character(group)]] <- compute_accuracy(TP, FP, TN, FN)
+  }
+  return(results)
+}
+```
+
+#### Diagnostic accuracy using CRS
+
+```{r}
+# Compute accuracy for each subgroup
+score_accuracy_overall <- compute_score_accuracy_crs(sub10_sumreq, "Overall")
+score_accuracy_study <- compute_score_accuracy_crs(sub10_sumreq, "study")
+score_accuracy_risk <- compute_score_accuracy_crs(sub10_sumreq, "highrisk")
+score_accuracy_hivstatus <- compute_score_accuracy_crs(sub10_sumreq, "hivstatus")
+score_accuracy_sam <- compute_score_accuracy_crs(sub10_sumreq, "sam")
+score_accuracy_age <- compute_score_accuracy_crs(sub10_sumreq, "age_cat_ext2")
+
+TDA_accuracy_overall <- compute_TDA_accuracy_crs(sub10, "Overall")
+TDA_accuracy_study <- compute_TDA_accuracy_crs(sub10, "study")
+TDA_accuracy_risk <- compute_TDA_accuracy_crs(sub10, "highrisk")
+TDA_accuracy_hivstatus <- compute_TDA_accuracy_crs(sub10, "hivstatus")
+TDA_accuracy_sam <- compute_TDA_accuracy_crs(sub10, "sam")
+TDA_accuracy_age <- compute_TDA_accuracy_crs(sub10, "age_cat_ext2")
+
+# Combine all results into a single dataframe
+overall_results_score <- data.frame(Subgroup = names(score_accuracy_overall), do.call(rbind, score_accuracy_overall))
+study_results_score <- data.frame(Subgroup = names(score_accuracy_study), do.call(rbind, score_accuracy_study))
+risk_results_score <- data.frame(Subgroup = names(score_accuracy_risk), do.call(rbind, score_accuracy_risk))
+hivstatus_results_score <- data.frame(Subgroup = names(score_accuracy_hivstatus), do.call(rbind, score_accuracy_hivstatus))
+sam_results_score <- data.frame(Subgroup = names(score_accuracy_sam), do.call(rbind, score_accuracy_sam))
+age_results_score <- data.frame(Subgroup = names(score_accuracy_age), do.call(rbind, score_accuracy_age))
+
+overall_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_overall), do.call(rbind, TDA_accuracy_overall))
+study_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_study), do.call(rbind, TDA_accuracy_study))
+risk_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_risk), do.call(rbind, TDA_accuracy_risk))
+hivstatus_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_hivstatus), do.call(rbind, TDA_accuracy_hivstatus))
+sam_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_sam), do.call(rbind, TDA_accuracy_sam))
+age_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_age), do.call(rbind, TDA_accuracy_age))
+
+# Add confidence intervals for sensitivity and specificity
+ci_func <- function(x, n) wilson_ci(x, n)
+
+# Apply confidence intervals for subgroup results
+apply_ci <- function(result) {
+  result$`Sensitivity 95% CI` <- apply(result[, c("TP", "FN")], 1, function(x) {
+    ci_values <- ci_func(x[1], sum(x))
+    paste0("(", round(ci_values[1] * 100, 2), "% - ", round(ci_values[2] * 100, 2), "%)")
+  })
+  result$`Specificity 95% CI` <- apply(result[, c("TN", "FP")], 1, function(x) {
+    ci_values <- ci_func(x[1], sum(x))
+    paste0("(", round(ci_values[1] * 100, 2), "% - ", round(ci_values[2] * 100, 2), "%)")
+  })
+  return(result)
+}
+
+overall_results_score <- apply_ci(overall_results_score)
+study_results_score <- apply_ci(study_results_score)
+risk_results_score <- apply_ci(risk_results_score)
+hivstatus_results_score <- apply_ci(hivstatus_results_score)
+sam_results_score <- apply_ci(sam_results_score)
+age_results_score <- apply_ci(age_results_score)
+
+overall_results_TDA <- apply_ci(overall_results_TDA)
+study_results_TDA <- apply_ci(study_results_TDA)
+risk_results_TDA <- apply_ci(risk_results_TDA)
+hivstatus_results_TDA <- apply_ci(hivstatus_results_TDA)
+sam_results_TDA <- apply_ci(sam_results_TDA)
+age_results_TDA <- apply_ci(age_results_TDA)
+
+# Combine all results into a single dataframe
+all_results_score <- bind_rows(overall_results_score, study_results_score, risk_results_score, hivstatus_results_score, 
+                         sam_results_score, age_results_score)
+
+all_results_TDA <- bind_rows(overall_results_TDA, study_results_TDA, risk_results_TDA, hivstatus_results_TDA, 
+                         sam_results_TDA, age_results_TDA)
+```
+
+```{r}
+# Score
+diagn_acc_score <- all_results_score[,c("Subgroup","TP","FP","FN","TN","Sensitivity","Sensitivity 95% CI","Specificity","Specificity 95% CI")]
+row.names(diagn_acc_score) <- NULL
+
+# Convert sensitivity and specificity to percentages with one decimal point
+diagn_acc_score <- diagn_acc_score %>%
+  mutate(Sensitivity = sprintf("%.1f%%", Sensitivity),
+         Specificity = sprintf("%.1f%%", Specificity))
+
+# TDA
+diagn_acc_TDA <- all_results_TDA[,c("Subgroup","TP","FP","FN","TN","Sensitivity","Sensitivity 95% CI","Specificity","Specificity 95% CI")]
+row.names(diagn_acc_TDA) <- NULL
+
+# Convert sensitivity and specificity to percentages with one decimal point
+diagn_acc_TDA <- diagn_acc_TDA %>%
+  mutate(Sensitivity = sprintf("%.1f%%", Sensitivity),
+         Specificity = sprintf("%.1f%%", Specificity))
+```
+
+##### Score section
+
+```{r}
+library(kableExtra)
+diagn_acc_score %>%
+  kbl() %>%
+  kable_paper("striped", full_width = F) %>%
+  pack_rows("Study", 2, 5) %>%
+  pack_rows("Risk group", 6, 7) %>%
+  pack_rows("HIV status", 8, 10) %>%
+  pack_rows("Malnutrition", 11, 12) %>%
+  pack_rows("Age", 13, 15)
+
+```
+
+##### Entire TDA
+
+```{r}
+library(kableExtra)
+diagn_acc_TDA %>%
+  kbl() %>%
+  kable_paper("striped", full_width = F) %>%
+  pack_rows("Study", 2, 5) %>%
+  pack_rows("Risk group", 6, 7) %>%
+  pack_rows("HIV status", 8, 10) %>%
+  pack_rows("Malnutrition", 11, 12) %>%
+  pack_rows("Age", 13, 15)
+
+```
+
+### ROC curves
+
+```{r}
+rapaed_sub10_sumreq <- subset(rapaed_sub10, Sum_required=="Yes")
+umoya_sub10_sumreq <- subset(umoya_sub10, Sum_required=="Yes")
+hiv_sub10_sumreq <- subset(hiv_sub10, Sum_required=="Yes")
+cohort_sub10_sumreq <- subset(cohort_sub10, Sum_required=="Yes")
+
+highrisk_sumreq <- subset(highrisk, Sum_required=="Yes")
+lowrisk_sumreq <- subset(lowrisk, Sum_required=="Yes")
+
+sub10_sumreq <- subset(sub10, Sum_required=="Yes")
+decide_sumreq <- subset(decide, Sum_required=="Yes")
+less2_sumreq <- subset(less2, Sum_required=="Yes")
+twoto10_sumreq <- subset(twoto10, Sum_required=="Yes")
+more10_sumreq <- subset(more10, Sum_required=="Yes")
+
+nomicro <- subset(sub10, MTb_result=="MTB Negative")
+```
+
+#### CRS
+
+```{r}
+library(pROC)
+
+par(pty="s")
+
+r_all = roc(sub10$CRS, sub10$Sum)
+r_nomicro = roc(nomicro$CRS, nomicro$Sum)
+r_sumreq = roc(sub10_sumreq$CRS, sub10_sumreq$Sum)
+
+multiple <- plot.roc(r_all, print.auc=TRUE, auc.polygon=FALSE,col=pal[1])
+multiple <- plot.roc(r_nomicro, print.auc=TRUE, auc.polygon=FALSE,col=pal[2], add=TRUE, print.auc.y=0.40)
+multiple <- plot.roc(r_sumreq, print.auc=TRUE, auc.polygon=FALSE,col=pal[3], add=TRUE, print.auc.y=0.30)
+
+multiple <- rect(0, 1.1, 1, 1.7, xpd=TRUE, col="white", border="white")
+
+legend("bottom",
+       legend=c("All", "Mtb-", "Score req."),
+       col=pal,
+       lwd=3, cex =0.6, xpd = TRUE, horiz = TRUE)
+```
+
+```{r}
+library(pROC)
+
+par(pty="s")
+
+r_rapaed = roc(rapaed_sub10_sumreq$CRS, rapaed_sub10_sumreq$Sum)
+r_umoya = roc(umoya_sub10_sumreq$CRS, umoya_sub10_sumreq$Sum)
+r_hiv = roc(hiv_sub10_sumreq$CRS, hiv_sub10_sumreq$Sum)
+r_cohort = roc(cohort_sub10_sumreq$CRS, cohort_sub10_sumreq$Sum)
+
+multiple <- plot.roc(r_rapaed, print.auc=TRUE, auc.polygon=FALSE,col=pal[1])
+multiple <- plot.roc(r_umoya, print.auc=TRUE, auc.polygon=FALSE,col=pal[2], add=TRUE, print.auc.y=0.40)
+multiple <- plot.roc(r_hiv, print.auc=TRUE, auc.polygon=FALSE,col=pal[3], add=TRUE, print.auc.y=0.30)
+multiple <- plot.roc(r_cohort, print.auc=TRUE, auc.polygon=FALSE,col=pal[4], add=TRUE, print.auc.y=0.20)
+
+multiple <- rect(0, 1.1, 1, 1.7, xpd=TRUE, col="white", border="white")
+
+legend("bottom",
+       legend=c("RaPaed", "UMOYA", "HIV", "Cohort"),
+       col=pal,
+       lwd=3, cex =0.8, xpd = TRUE, horiz = TRUE)
+```
+
+```{r}
+library(pROC)
+
+par(pty="s")
+
+r_high = roc(highrisk_sumreq$CRS, highrisk_sumreq$Sum)
+r_low = roc(lowrisk_sumreq$CRS, lowrisk_sumreq$Sum)
+
+multiple <- plot.roc(r_high, print.auc=TRUE, auc.polygon=FALSE,col=pal[1])
+multiple <- plot.roc(r_low, print.auc=TRUE, auc.polygon=FALSE,col=pal[2], add=TRUE, print.auc.y=0.40)
+
+multiple <- rect(0, 1.1, 1, 1.7, xpd=TRUE, col="white", border="white")
+
+legend("bottom",
+       legend=c("High risk", "Low risk"),
+       col=pal,
+       lwd=3, cex =0.8, xpd = TRUE, horiz = TRUE)
+```
+
+```{r}
+library(pROC)
+
+par(pty="s")
+
+r_sub10 = roc(sub10_sumreq$CRS, sub10_sumreq$Sum)
+r_all = roc(decide_sumreq$CRS, decide_sumreq$Sum)
+r_less2 = roc(less2_sumreq$CRS, less2_sumreq$Sum)
+r_2to10 = roc(twoto10_sumreq$CRS, twoto10_sumreq$Sum)
+r_more10 = roc(more10_sumreq$CRS, more10_sumreq$Sum)
+
+multiple <- plot.roc(r_sub10, print.auc=TRUE, auc.polygon=FALSE,col=pal[1])
+multiple <- plot.roc(r_all, print.auc=TRUE, auc.polygon=FALSE,col=pal[2], add=TRUE, print.auc.y=0.40)
+multiple <- plot.roc(r_less2, print.auc=TRUE, auc.polygon=FALSE,col=pal[3], add=TRUE, print.auc.y=0.30)
+multiple <- plot.roc(r_2to10, print.auc=TRUE, auc.polygon=FALSE,col=pal[4], add=TRUE, print.auc.y=0.20)
+multiple <- plot.roc(r_more10, print.auc=TRUE, auc.polygon=FALSE,col=pal[5], add=TRUE, print.auc.y=0.10)
+
+multiple <- rect(0, 1.1, 1, 1.7, xpd=TRUE, col="white", border="white")
+
+legend("bottom",
+       legend=c("< 10", "All", "< 2", "2 - 10", "> 10"),
+       col=pal,
+       lwd=3, cex =0.6, xpd = TRUE, horiz = TRUE)
+```
+
+### Decision curve analysis
+
+**X-axis (Threshold Probability):** Represents the probability threshold at which a patient would opt for treatment. For example, a threshold of 50% means a patient would choose treatment if their predicted risk of the condition is 50% or higher.
+
+**Y-axis (Net Benefit):** Represents the net benefit of a treatment strategy. Net benefit combines true positives and false positives, considering the harm of unnecessary treatments.
+
+```{r}
+library(dcurves)
+library(rmda)
+
+sub10 <- sub10 %>%
+  labelled::set_variable_labels(
+    TxInitiation_num = "TDA A",
+    TxInitiation_B_num = "TDA B")
+
+rapaed_sub10 <- rapaed_sub10 %>%
+  labelled::set_variable_labels(
+    TxInitiation_num = "TDA A (RaPaed)",
+    TxInitiation_B_num = "TDA B (RaPaed)")
+
+umoya_sub10 <- umoya_sub10 %>%
+  labelled::set_variable_labels(
+    TxInitiation_num = "TDA A (UMOYA)",
+    TxInitiation_B_num = "TDA B (UMOYA)")
+
+hiv_sub10 <- hiv_sub10 %>%
+  labelled::set_variable_labels(
+    TxInitiation_num = "TDA A (HIV)",
+    TxInitiation_B_num = "TDA B (HIV)")
+
+cohort_sub10 <- cohort_sub10 %>%
+  labelled::set_variable_labels(
+    TxInitiation_num = "TDA A (Cohort)",
+    TxInitiation_B_num = "TDA B (Cohort)")
+
+dca_results <- dca(CRS ~ TxInitiation_num + TxInitiation_B_num, data = sub10)
+plot(dca_results, smooth = TRUE) + 
+  ggplot2::labs(x = "Treatment Threshold Probability") +
+  ggplot2::scale_colour_manual(values = pal)
+
+dca_results_rapaed <- dca(CRS ~ TxInitiation_num + TxInitiation_B_num, data = rapaed_sub10)
+plot(dca_results_rapaed, smooth = TRUE) + 
+  ggplot2::labs(x = "Treatment Threshold Probability") +
+  ggplot2::scale_colour_manual(values = pal)
+
+dca_results_umoya <- dca(CRS ~ TxInitiation_num + TxInitiation_B_num, data = umoya_sub10)
+plot(dca_results_umoya, smooth = TRUE) + 
+  ggplot2::labs(x = "Treatment Threshold Probability") +
+  ggplot2::scale_colour_manual(values = pal)
+
+dca_results_hiv <- dca(CRS ~ TxInitiation_num + TxInitiation_B_num, data = hiv_sub10)
+plot(dca_results_hiv, smooth = TRUE) + 
+  ggplot2::labs(x = "Treatment Threshold Probability") +
+  ggplot2::scale_colour_manual(values = pal)
+
+dca_results_cohort <- dca(CRS ~ TxInitiation_num + TxInitiation_B_num, data = cohort_sub10)
+plot(dca_results_cohort, smooth = TRUE) + 
+  ggplot2::labs(x = "Treatment Threshold Probability") +
+  ggplot2::scale_colour_manual(values = pal)
+```
+
+TDA A and TDA B have higher net benefits than both the "Treat All" and "Treat None" strategies over a range of threshold probabilities, indicating that they are better at identifying patients who would benefit from treatment without unnecessarily treating those who wouldn't benefit.
+
+The point where the lines for TDA A or TDA B intersect the "Treat All" line is where their net benefit becomes lower than just treating everyone. This typically happens at higher threshold probabilities.
+
+If TDA A consistently shows higher net benefit across a range of relevant threshold probabilities compared to TDA B, it would be considered the better model for predicting who should be treated.
+
+
+### Under and over treatment
+
+**Under and over treatment according to TDA**
+
+Under treated = children confirmed or unconfirmed <10
+Under treated = CD to treat receiving a score <10
+
+Over treated = children unlikely) receiving a score>10
+Over treated = CD to not treat (and doing well) receiving a score>10
+
+#### CRS
+
+```{r, include=TRUE}
+library(networkD3)
+library(dplyr)
+# Make a connection data frame
+links <- data.frame(
+  source=c("TDA negative (n=371)","TDA negative (n=371)","TDA negative (n=371)","TDA positive (n=1341)","TDA positive (n=1341)","TDA positive (n=1341)"), 
+  target=c("Unlikely TB (n=743)","Unconfirmed TB (n=705)","Confirmed TB (n=264)","Unlikely TB (n=743)","Unconfirmed TB (n=705)","Confirmed TB (n=264)"), 
+  value=c(295,74,2,448,631,262)
+)
+ 
+# From these flows we need to create a node data frame: it lists every entities involved in the flow
+nodes <- data.frame(
+name=c(as.character(links$source), as.character(links$target)) %>% 
+    unique()
+)
+
+# With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
+links$IDsource <- match(links$source, nodes$name)-1 
+links$IDtarget <- match(links$target, nodes$name)-1
+ 
+# Add a 'group' column to each connection:
+links$group <- as.factor(c("neg","neg","neg","pos","pos","pos"))
+ 
+# Add a 'group' column to each node. Here I decide to put all of them in the same group to make them grey
+nodes$group <- as.factor(c("my_unique_group"))
+ 
+# Give a color for each group:
+my_color <- 'd3.scaleOrdinal() .domain(["neg","pos","my_unique_group"]) .range(["#B71C1C", "#0D47A1", "grey"])'
+ 
+# Make the Network. I call my colour scale with the colourScale argument
+sankey <- sankeyNetwork(Links = links, Nodes = nodes, Source = "IDsource", Target = "IDtarget", 
+                   Value = "value", NodeID = "name", fontFamily = "sans-serif", fontSize = 14,
+                   colourScale=my_color, LinkGroup="group", NodeGroup="group", iterations = 0)
+sankey
+```
+
+#### CD
+
+```{r, include=TRUE}
+library(networkD3)
+library(dplyr)
+# Make a connection data frame
+links <- data.frame(
+  source=c("TDA negative (n=371)","TDA negative (n=371)","TDA positive (n=1341)","TDA positive (n=1341)"), 
+  target=c("Not treated (n=952)","Treated (n=760)","Not treated (n=952)","Treated (n=760)"), 
+  value=c(299,72,653,688)
+)
+ 
+# From these flows we need to create a node data frame: it lists every entities involved in the flow
+nodes <- data.frame(
+  name=c(as.character(links$source), as.character(links$target)) %>% 
+    unique()
+)
+
+# With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
+links$IDsource <- match(links$source, nodes$name)-1 
+links$IDtarget <- match(links$target, nodes$name)-1
+ 
+# Add a 'group' column to each connection:
+links$group <- as.factor(c("neg","neg","pos","pos"))
+ 
+# Add a 'group' column to each node. Here I decide to put all of them in the same group to make them grey
+nodes$group <- as.factor(c("my_unique_group"))
+ 
+# Give a color for each group:
+my_color <- 'd3.scaleOrdinal() .domain(["neg","pos","my_unique_group"]) .range(["#B71C1C", "#0D47A1", "grey"])'
+ 
+# Make the Network. I call my colour scale with the colourScale argument
+sankey <- sankeyNetwork(Links = links, Nodes = nodes, Source = "IDsource", Target = "IDtarget", 
+                   Value = "value", NodeID = "name",fontFamily = "sans-serif",fontSize = 14,
+                   colourScale=my_color, LinkGroup="group", NodeGroup="group", iterations = 0)
+sankey
+```
+
+
+
+
+
+
+

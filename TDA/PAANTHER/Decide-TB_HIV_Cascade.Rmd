@@ -1,0 +1,607 @@
+---
+title: "Decide-TB - SAM TDA RaPaed"
+author: "Leyla Sophie Larsson"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, fig.align = 'center')
+# chunk options https://yihui.org/knitr/options/
+```
+
+```{r clear, include=FALSE}
+rm(list = ls())
+```
+
+```{r rstan_options(auto_write = TRUE), include=FALSE}
+# Import libraries
+
+library(haven)
+library(foreign)
+library(gtsummary)
+library(naniar)
+library(lubridate)
+library(lisa)
+library(ggpubr)
+library(gt)
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(RColorBrewer)
+library(hrbrthemes)
+
+theme_set(theme_light(base_size = 9))
+pal <- c("#FF8C00", "#A034F0", "#159090", "#152679")
+```
+
+```{r macros}
+# Standard settings
+dotsize <- 0.4 # Set dot size
+```
+
+```{r, include=FALSE}
+# Import data
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_HIV_Dataset.Rda")
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_HIV_Dict.Rda")
+```
+
+**TDA**
+
+The goal of this file is to run the generated Decide-TB dataset through the TB-Speed SAM Treatment Decision Algorithms as shown below to look at the numbers.
+
+```{r}
+# Create sub datasets with restrictions
+tbspeed_hiv <- subset(tbspeed_hiv, hivstatus == "HIV positive")
+tbspeed_hiv1 <- subset(tbspeed_hiv, hivstatus == "HIV positive" & HIV_CDC == 1)
+tbspeed_hiv2 <- subset(tbspeed_hiv, hivstatus == "HIV positive" & HIV_CDC == 2)
+tbspeed_hiv3 <- subset(tbspeed_hiv, hivstatus == "HIV positive" & HIV_CDC == 3)
+
+less2 <- subset(tbspeed_hiv, age_cat == "< 2 years")
+twoto10 <- subset(tbspeed_hiv, age_cat == "2 - 10 years")
+more10 <- subset(tbspeed_hiv, age_cat == "> 10 years")
+
+uctli <- subset(tbspeed_hiv, SiteID=="2. UctLi")
+mmrc <- subset(tbspeed_hiv, SiteID=="3. Mmrc")
+ins <- subset(tbspeed_hiv, SiteID=="4. Ins")
+com <- subset(tbspeed_hiv, SiteID=="5. CoM")
+cmc <- subset(tbspeed_hiv, SiteID=="6. CMC")
+
+tbspeed_hiv <- tbspeed_hiv %>% mutate(malnutrition = case_when(
+  SAM_V1==1 ~ "Severe",
+  MAM_V1==1 ~ "Mild/moderate",
+  NoAM_V1==1 ~ "None"
+))
+
+sam <- subset(tbspeed_hiv, SAM_V1==1)
+mam <- subset(tbspeed_hiv, MAM_V1==1)
+noam <- subset(tbspeed_hiv, NoAM_V1==1)
+```
+
+## Flow diagram
+
+```{r}
+# Prep data for flow chart 
+library(dplyr)
+library(tidyverse)
+
+a <- subset(noam, !is.na("PersID")) %>% summarise(a = n()) 
+b <- subset(noam, (Susp_Cough == "Yes" | Susp_Fever == "Yes" | Susp_Weight == "Yes" | Susp_Chest == "Yes")) %>% summarise(b = n())
+c <- subset(noam, (Susp_Cough == "Yes" | Susp_Fever == "Yes" | Susp_Weight == "Yes" | Susp_Chest == "Yes") & TBcontact == "Yes") %>% summarise(c = n())
+d <- subset(noam, (Susp_Cough == "Yes" | Susp_Fever == "Yes" | Susp_Weight == "Yes" | Susp_Chest == "Yes") & TBcontact == "No") %>% summarise(d = n())
+e <- subset(noam, (Susp_Cough == "Yes" | Susp_Fever == "Yes" | Susp_Weight == "Yes" | Susp_Chest == "Yes") & Symp_Score_Bin == "Yes" & TBcontact == "No") %>% summarise(e = n())
+f <- subset(noam, (Susp_Cough == "Yes" | Susp_Fever == "Yes" | Susp_Weight == "Yes" | Susp_Chest == "Yes") & Symp_Score_Bin == "No" & TBcontact == "No") %>% summarise(f = n())
+g <- subset(noam, (Susp_Cough == "Yes" | Susp_Fever == "Yes" | Susp_Weight == "Yes" | Susp_Chest == "Yes") & Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) %>% summarise(g = n())
+h <- subset(noam, (Susp_Cough == "Yes" | Susp_Fever == "Yes" | Susp_Weight == "Yes" | Susp_Chest == "Yes") & Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100) %>% summarise(h = n())
+i <- subset(noam, (Susp_Cough == "Yes" | Susp_Fever == "Yes" | Susp_Weight == "Yes" | Susp_Chest == "Yes") & (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No"))) %>% summarise(i = n())
+j <- subset(noam, (Susp_Cough == "Yes" | Susp_Fever == "Yes" | Susp_Weight == "Yes" | Susp_Chest == "Yes") & Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100) %>% summarise(j = n())
+
+```
+
+```{r}
+library(consort)
+library(labelled)
+library(DiagrammeR)
+
+# Define some sample data
+data <- list(a=a$a, b=b$b, c=c$c, d=d$d, e=e$e, f=f$f, g=g$g, h=h$h, i=i$i, j=j$j)
+
+DiagrammeR::grViz("
+digraph graph_eos {
+
+graph [layout = dot]
+
+# node definitions with substituted label text
+node [fontname = Helvetica, fontcolor = darkslategray,
+        shape = rectangle, fixedsize = false, width = 2,
+        style = filled, fillcolor = AliceBlue]
+a [label = '@@1']
+b [label = '@@2']
+c [label = '@@3']
+d [label = '@@4']
+e [label = '@@5']
+f [label = '@@6']
+g [label = '@@7']
+h [label = '@@8']
+i [label = '@@9']
+j [label = '@@10']
+
+a -> b -> c -> i;
+b -> d -> e -> i;
+d -> f -> g -> i;
+f -> h -> j;
+
+}
+
+[1]: paste0('HIV-infected child (n = ', data$a, ')')
+[2]: paste0('Clinical suspicion of TB in an HIV-infected child (n = ', data$b, ')')
+[3]: paste0('History of contact with TB case (n = ', data$c, ')')
+[4]: paste0('No contact with TB case (n = ', data$d, ')')
+[5]: paste0('Symptom score > 10 (n = ', data$e, ')')
+[6]: paste0('Symptom score ≤ 10 (n = ', data$f, ')')
+[7]: paste0('Overall score > 10 (n = ', data$g, ')')
+[8]: paste0('Overall score ≤ 10 (n = ', data$h, ')')
+[9]: paste0('Initiate TB treatment (n = ', data$i, ')')
+[10]: paste0('Treat as appropriate and reassess (n = ', data$j, ')')
+")
+
+```
+
+```{r, include=FALSE}
+rm(a,b,c,d,e,f,g,h,i,j)
+```
+
+### Diagnostic accuracy
+
+```{r}
+TxInitiation <- subset(tbspeed_hiv, (Susp_Cough == "Yes" | Susp_Fever == "Yes" | Susp_Weight == "Yes" | Susp_Chest == "Yes") & (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")))
+table(TxInitiation$DiagnClass)
+
+TxInitiation_No <- subset(tbspeed_hiv, (Susp_Cough == "Yes" | Susp_Fever == "Yes" | Susp_Weight == "Yes" | Susp_Chest == "Yes") & Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100)
+table(TxInitiation_No$DiagnClass)
+
+```
+
+```{r}
+tbspeed_hiv <- tbspeed_hiv %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_hiv <- subset(tbspeed_hiv, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+tbspeed_hiv1 <- tbspeed_hiv1 %>% mutate(Outcome = case_when(
+(Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_hiv1 <- subset(tbspeed_hiv1, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+
+tbspeed_hiv2 <- tbspeed_hiv2 %>% mutate(Outcome = case_when(
+ (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_hiv2 <- subset(tbspeed_hiv2, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+
+tbspeed_hiv3 <- tbspeed_hiv3 %>% mutate(Outcome = case_when(
+ (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_hiv3 <- subset(tbspeed_hiv3, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+# Age
+less2 <- less2 %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_less2 <- subset(less2, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+twoto10 <- twoto10 %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_twoto10 <- subset(twoto10, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+more10 <- more10 %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_more10 <- subset(more10, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+# Site
+uctli <- uctli %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_uctli <- subset(uctli, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+mmrc <- mmrc %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_mmrc <- subset(mmrc, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+ins <- ins %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_ins <- subset(ins, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+com <- com %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_com <- subset(com, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+cmc <- cmc %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_cmc <- subset(cmc, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+# SAM
+sam <- sam %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_sam <- subset(sam, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+mam <- mam %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_mam <- subset(mam, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+noam <- noam %>% mutate(Outcome = case_when(
+  (Tx_Initiation_max=="Yes" | TBcontact == "Yes" | (Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max > 100) | (Symp_Score_Bin == "Yes" & TBcontact == "No")) ~ 1,
+ Symp_Score_Bin == "No" & TBcontact == "No" & Overall_Score_max <= 100 ~ 0,
+))
+diagn_noam <- subset(noam, (Susp_Cough != "Yes" & Susp_Fever != "Yes" & Susp_Weight != "Yes" & Susp_Chest != "Yes"))
+
+```
+
+```{r}
+table(diagn_hiv$Outcome, diagn_hiv$DiagnClass)
+table(diagn_hiv1$Outcome, diagn_hiv1$DiagnClass)
+table(diagn_hiv2$Outcome, diagn_hiv2$DiagnClass)
+table(diagn_hiv3$Outcome, diagn_hiv3$DiagnClass)
+```
+
+```{r}
+library(epiR)
+srs <- as.table(matrix(c(25,3,16,9), nrow = 2, byrow = TRUE))
+rval_srs <- epi.tests(srs, conf.level = 0.95)
+print(rval_srs)
+```
+
+### Distributions
+
+```{r}
+pal <- c("#212121","#003366", "#0066CC", "#3399FF", "#2196F3", "#CCE5FF")
+pal_pro <- c("#B71C1C", "#0D47A1", "#2E7D32", "#212121", "#FF8C00")
+```
+
+``` {r, include=FALSE}
+# function for the raincloud plots later. this function if you look at it calculates the median
+add_sample <- function(x){
+   return(c(y = max(x) + .025, 
+            label = length(x)))
+}
+```
+
+```{r}
+decide <- subset(tbspeed_hiv, TBcontact == "No")
+decide_xpert <- subset(decide, !is.na(BinaryMaxResult))
+decide_xpert$PCR_Semiquant <- factor(decide_xpert$PCR_Semiquant, 
+                                 levels = c("Trace", "Very low", "Low", "Medium", "High"))
+```
+
+#### Xpert
+
+##### Symptom score
+
+``` {r}
+library(colorspace)
+
+decide_xpert %>% 
+  group_by(PCR_Semiquant) %>% 
+  ggplot(aes(x = fct_rev(PCR_Semiquant), y = Symp_Score)) + 
+  ggdist::stat_halfeye(
+    aes(color = PCR_Semiquant,
+        fill = after_scale(lighten(color, .5))),
+    adjust = .4, 
+    width = .5, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) +
+  geom_point(
+    aes(color = PCR_Semiquant,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    fill = "white",
+    shape = 21,
+    stroke = .4,
+    size = 2,
+    position = position_jitter(seed = 1, width = .12)
+  ) + 
+  geom_point(
+    aes(fill = PCR_Semiquant),
+    color = "transparent",
+    shape = 21,
+    stroke = .4,
+    size = 1,
+    alpha = .2,
+    position = position_jitter(seed = 1, width = .12)
+  ) +
+  geom_boxplot(
+    aes(color = PCR_Semiquant,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .22, 
+    outlier.shape = NA
+  ) +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  labs(
+    x = NULL,
+    y = "Score",
+    title = "Distribution of symptom score by Xpert semiquantitative readout",
+  ) + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  annotate("text", x=2.5, y=-4.5, label= "*", color="white") +
+  stat_summary(
+    geom = "text",    
+    fun.data = add_sample,
+    aes(label = paste("n =", ..label..),
+        color = PCR_Semiquant,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Condensed",
+    size = 3,
+    hjust = 1,
+    vjust = 3
+  ) + 
+  stat_summary(
+    geom = "text",
+    fun = "median",
+    aes(label = round(..y.., 2),
+        color = PCR_Semiquant,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Mono",
+    fontface = "bold",
+    size = 4,
+    vjust = -2.5
+  )
+```
+
+##### Overall score
+
+``` {r}
+library(colorspace)
+
+decide_xpert %>% 
+  group_by(PCR_Semiquant) %>% 
+  ggplot(aes(x = fct_rev(PCR_Semiquant), y = Overall_Score_max)) + 
+  ggdist::stat_halfeye(
+    aes(color = PCR_Semiquant,
+        fill = after_scale(lighten(color, .5))),
+    adjust = .4, 
+    width = .5, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) +
+  geom_point(
+    aes(color = PCR_Semiquant,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    fill = "white",
+    shape = 21,
+    stroke = .4,
+    size = 2,
+    position = position_jitter(seed = 1, width = .12)
+  ) + 
+  geom_point(
+    aes(fill = PCR_Semiquant),
+    color = "transparent",
+    shape = 21,
+    stroke = .4,
+    size = 1,
+    alpha = .2,
+    position = position_jitter(seed = 1, width = .12)
+  ) +
+  geom_boxplot(
+    aes(color = PCR_Semiquant,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .22, 
+    outlier.shape = NA
+  ) +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  labs(
+    x = NULL,
+    y = "Score",
+    title = "Distribution of chest/Xpert score by Xpert semiquantitative readout",
+  ) + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  annotate("text", x=2.5, y=-4.5, label= "*", color="white") +
+  stat_summary(
+    geom = "text",    
+    fun.data = add_sample,
+    aes(label = paste("n =", ..label..),
+        color = PCR_Semiquant,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Condensed",
+    size = 3,
+    hjust = 1,
+    vjust = 3
+  ) + 
+  stat_summary(
+    geom = "text",
+    fun = "median",
+    aes(label = round(..y.., 2),
+        color = PCR_Semiquant,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Mono",
+    fontface = "bold",
+    size = 4,
+    vjust = -2.5
+  )
+```
+
+#### By diagnostic classification
+
+```{r}
+order <- c("Confirmed", "Unconfirmed", "Unlikely", "Unclassifiable")
+```
+
+##### Symptoms score
+
+``` {r}
+library(colorspace)
+
+decide %>% 
+  mutate(DiagnClass = forcats::fct_relevel(DiagnClass, order)) %>%
+  group_by(DiagnClass) %>% 
+  ggplot(aes(x = fct_rev(DiagnClass), y = Symp_Score)) + 
+  ggdist::stat_halfeye(
+    aes(color = DiagnClass,
+        fill = after_scale(lighten(color, .5))),
+    adjust = .4, 
+    width = .5, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) +
+  geom_point(
+    aes(color = DiagnClass,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    fill = "white",
+    shape = 21,
+    stroke = .4,
+    size = 2,
+    position = position_jitter(seed = 1, width = .12)
+  ) + 
+  geom_point(
+    aes(fill = DiagnClass),
+    color = "transparent",
+    shape = 21,
+    stroke = .4,
+    size = 1,
+    alpha = .2,
+    position = position_jitter(seed = 1, width = .12)
+  ) +
+  geom_boxplot(
+    aes(color = DiagnClass,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .22, 
+    outlier.shape = NA
+  ) +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  labs(
+    x = NULL,
+    y = "Score",
+    title = "Distribution of symptom score by diagnostic classification",
+  ) + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  annotate("text", x=2.5, y=-4.5, label= "*", color="white") +
+  stat_summary(
+    geom = "text",    
+    fun.data = add_sample,
+    aes(label = paste("n =", ..label..),
+        color = DiagnClass,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Condensed",
+    size = 3,
+    hjust = 1,
+    vjust = 3
+  ) + 
+  stat_summary(
+    geom = "text",
+    fun = "median",
+    aes(label = round(..y.., 2),
+        color = DiagnClass,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Mono",
+    fontface = "bold",
+    size = 4,
+    vjust = -2.5
+  )
+```
+
+##### Overall score
+
+``` {r}
+library(colorspace)
+
+decide %>% 
+  mutate(DiagnClass = forcats::fct_relevel(DiagnClass, order)) %>%
+  group_by(DiagnClass) %>% 
+  ggplot(aes(x = fct_rev(DiagnClass), y = Overall_Score_max)) + 
+  ggdist::stat_halfeye(
+    aes(color = DiagnClass,
+        fill = after_scale(lighten(color, .5))),
+    adjust = .4, 
+    width = .5, 
+    .width = 0,
+    justification = -.4, 
+    point_color = NA) +
+  geom_point(
+    aes(color = DiagnClass,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    fill = "white",
+    shape = 21,
+    stroke = .4,
+    size = 2,
+    position = position_jitter(seed = 1, width = .12)
+  ) + 
+  geom_point(
+    aes(fill = DiagnClass),
+    color = "transparent",
+    shape = 21,
+    stroke = .4,
+    size = 1,
+    alpha = .2,
+    position = position_jitter(seed = 1, width = .12)
+  ) +
+  geom_boxplot(
+    aes(color = DiagnClass,
+        color = after_scale(darken(color, .1, space = "HLS")),
+        fill = after_scale(desaturate(lighten(color, .8), .4))),
+    width = .22, 
+    outlier.shape = NA
+  ) +
+  scale_color_manual(values = pal, guide = "none") +
+  scale_fill_manual(values = pal, guide = "none") +
+  labs(
+    x = NULL,
+    y = "Score",
+    title = "Distribution of chest/xpert score by diagnostic classification",
+  ) + 
+  coord_flip(xlim = c(1.2, NA), clip = "off") +
+  annotate("text", x=2.5, y=-4.5, label= "*", color="white") +
+  stat_summary(
+    geom = "text",    
+    fun.data = add_sample,
+    aes(label = paste("n =", ..label..),
+        color = DiagnClass,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Condensed",
+    size = 3,
+    hjust = 1,
+    vjust = 3
+  ) + 
+  stat_summary(
+    geom = "text",
+    fun = "median",
+    aes(label = round(..y.., 2),
+        color = DiagnClass,
+        color = after_scale(darken(color, .1, space = "HLS"))),
+    family = "Roboto Mono",
+    fontface = "bold",
+    size = 4,
+    vjust = -2.5
+  )
+```

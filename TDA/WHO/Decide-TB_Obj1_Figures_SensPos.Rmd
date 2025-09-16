@@ -1,0 +1,471 @@
+---
+title: "Decide-TB - TDA A"
+author: "Leyla Sophie Larsson"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 4
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, fig.align = 'center')
+# chunk options https://yihui.org/knitr/options/
+```
+
+```{r clear, include=FALSE}
+rm(list = ls())
+```
+
+```{r rstan_options(auto_write = TRUE), include=FALSE}
+# Import libraries
+
+library(haven)
+library(foreign)
+library(gtsummary)
+library(naniar)
+library(lubridate)
+library(lisa)
+library(ggpubr)
+library(gt)
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(RColorBrewer)
+library(hrbrthemes)
+
+theme_set(theme_light(base_size = 9))
+pal <- c("#FFA726","#EF6C00","#FFCC80","#FB8C00","#FFE0B2")
+pal_b <- c("#64B5F6","#1565C0","#90CAF9","#2196F3","#BBDEFB")
+pal_alpha <- c("#FFA72680","#EF6C0080","#FFCC8080","#FB8C0080","#FFE0B280")
+pal_b_alpha <- c("#64B5F680","#1565C080","#90CAF980","#2196F380","#BBDEFB80")
+pal_union <- c("#fcbc2a","#bc232c","#dc762c","#d15b2c","#FFCC80")
+pal_union_b <- c("#1c3c73","#7388a7","#8ca4bc","#516b94","#cad2de")
+pal_union_alpha <- c("#fcbc2a80","#bc232c80","#dc762c80","#d15b280c","#FFCC8800")
+pal_union_b_alpha <- c("#1c3c7380","#7388a780","#8ca4bc80","#516b9480","#cad2d80e")
+
+```
+
+```{r macros}
+# Directories
+projdir <- "/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Code/TDA/WHO/"
+datadir <- "/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/"
+setwd(projdir)
+# Standard settings
+dotsize <- 0.4 # Set dot size
+```
+
+```{r, include=FALSE}
+# Import data
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_Dataset_yesNS.Rda")
+load("/users/leylasophielarsson/Desktop/Studies/Decide-TB/Analysis/Data/Decide-TB_DatasetDict.Rda")
+```
+
+```{r}
+decide <- decide_yesNS
+```
+
+```{r}
+# Generate CD and CRS variables for later
+decide <- decide %>% mutate(CD = case_when(
+  Treatment == "Yes" ~ 1,
+  Treatment == "No" ~ 0
+))
+
+decide <- decide %>% mutate(CRS = case_when(
+  DiagnClass_TDA == "Confirmed TB" | DiagnClass_TDA == "Unconfirmed TB" | DiagnClass_TDA == "Confirmed" | DiagnClass_TDA == "Unconfirmed" ~ 1,
+  DiagnClass_TDA == "Unlikely TB" | DiagnClass_TDA == "Unlikely" ~ 0
+))
+```
+
+```{r}
+# Create variables to help reduce clutter
+decide$age_cat_ext2 <- cut(decide$age,
+                 breaks=c(0,2,5,10,15),
+                 labels=c('< 2 years', '2 - < 5 years', '5 - 10 years', '> 10 years'))
+decide$age_cat_ext2 <- factor(decide$age_cat_ext2, levels = c('< 2 years', '2 - < 5 years', '5 - 10 years', '> 10 years'))
+
+# Data manipulation
+decide <- decide %>% mutate(
+  Cavitations = if_else(CXR_cavitations > 0, "Yes", "No"),
+  Adenopathy = if_else(CXR_lymph > 0, "Yes", "No"),
+  Miliary = if_else(CXR_miliary > 0, "Yes", "No"),
+  Opacities = if_else(CXR_opacity > 0, "Yes", "No"),
+  Effusion = if_else(CXR_effusion > 0, "Yes", "No")
+)
+
+# Create sub datasets with restrictions
+decide <- subset(decide, dangersigns == "No")
+decide$DiagnClass_TDA <- factor(decide$DiagnClass_TDA, levels = c("Confirmed TB","Unconfirmed TB", "Unlikely TB"))
+decide <- decide %>% mutate(Sum_required = if_else(TBContact == "No" & dangersigns == "No" & (MTb_result == "MTB Negative" | is.na(MTb_result)),  "Yes", "No"))
+
+less2 <- subset(decide, age_cat == "< 2 years")
+twoto5 <- subset(decide, age_cat_ext2 == "2 - < 5 years")
+fiveto10 <- subset(decide, age_cat_ext2 == "5 - 10 years")
+sub10 <- subset(decide, age_cat == "< 2 years" | age_cat == "2 - 10 years")
+
+rapaed_sub10 <- subset(sub10, study=="RaPaed")
+umoya_sub10 <- subset(sub10, study=="UMOYA")
+hiv_sub10 <- subset(sub10, study=="HIV")
+cohort_sub10 <- subset(sub10, study=="Cohort")
+
+highrisk <- subset(sub10, highrisk=="Yes")
+lowrisk <- subset(sub10, highrisk=="No")
+```
+
+### Table 2: Diagnostic accuracy of both treatment decision algorithms against a composite reference standard and clinician decision to treat
+
+```{r}
+sub10 <- sub10 %>% mutate(OutcomeTDA = if_else(TxInitiation == "Yes", 1, 0),
+                          OutcomeTDA_B = if_else(TxInitiation_B == "Yes", 1, 0))
+```
+
+Table for diagnostic accuracy overall and by subgroup
+
+```{r}
+sub10 <- sub10 %>% mutate(Overall = "Overall")
+```
+
+```{r}
+# Generate a dataframe just for those who make it to the score section
+sub10_sumreq <- subset(sub10, Sum_required=="Yes")
+```
+
+```{r}
+# Function to calculate Wilson score interval for binomial proportions
+wilson_ci <- function(x, n, conf.level = 0.95) {
+  p_hat <- x / n
+  z <- qnorm(1 - (1 - conf.level) / 2)
+  lower <- (2 * n * p_hat + z^2 - z * sqrt(z^2 - 1 / n + 4 * n * p_hat * (1 - p_hat) + (4 * p_hat - 2)))/(2 * (n + z^2))
+  upper <- (2 * n * p_hat + z^2 + z * sqrt(z^2 - 1 / n + 4 * n * p_hat * (1 - p_hat) - (4 * p_hat - 2)))/(2 * (n + z^2))
+  return(c(lower, upper))
+}
+
+# Define a function to compute sensitivity and specificity
+compute_accuracy <- function(TP, FP, TN, FN) {
+  sensitivity <- TP / (TP + FN) * 100
+  specificity <- TN / (TN + FP) * 100
+  return(c(TP = TP, FP = FP, TN = TN, FN = FN, Sensitivity = sensitivity, Specificity = specificity))
+}
+```
+
+```{r}
+# CRS
+# TDA
+# Define a function to compute accuracy for each subgroup
+compute_TDA_accuracy_crs <- function(data, subgroup) {
+  groups <- unique(data[[subgroup]])
+  results <- list()
+  for (group in groups) {
+    sub_data <- data[data[[subgroup]] == group, ]
+    TP <- sum(sub_data$OutcomeTDA == 1 & sub_data$CRS == 1)
+    FP <- sum(sub_data$OutcomeTDA == 1 & sub_data$CRS == 0)
+    TN <- sum(sub_data$OutcomeTDA == 0 & sub_data$CRS == 0)
+    FN <- sum(sub_data$OutcomeTDA == 0 & sub_data$CRS == 1)
+    results[[as.character(group)]] <- compute_accuracy(TP, FP, TN, FN)
+  }
+  return(results)
+}
+
+# CRS
+# TDA
+# Define a function to compute accuracy for each subgroup
+compute_TDA_accuracy_crs_b <- function(data, subgroup) {
+  groups <- unique(data[[subgroup]])
+  results <- list()
+  for (group in groups) {
+    sub_data <- data[data[[subgroup]] == group, ]
+    TP <- sum(sub_data$OutcomeTDA_B == 1 & sub_data$CRS == 1)
+    FP <- sum(sub_data$OutcomeTDA_B == 1 & sub_data$CRS == 0)
+    TN <- sum(sub_data$OutcomeTDA_B == 0 & sub_data$CRS == 0)
+    FN <- sum(sub_data$OutcomeTDA_B == 0 & sub_data$CRS == 1)
+    results[[as.character(group)]] <- compute_accuracy(TP, FP, TN, FN)
+  }
+  return(results)
+}
+
+```
+
+**Diagnostic accuracy TDA A using CRS**
+
+```{r}
+# Compute accuracy for each subgroup
+TDA_accuracy_overall <- compute_TDA_accuracy_crs(sub10, "Overall")
+TDA_accuracy_study <- compute_TDA_accuracy_crs(sub10, "study")
+TDA_accuracy_risk <- compute_TDA_accuracy_crs(sub10, "highrisk")
+TDA_accuracy_hivstatus <- compute_TDA_accuracy_crs(sub10, "hivstatus")
+TDA_accuracy_sam <- compute_TDA_accuracy_crs(sub10, "sam")
+TDA_accuracy_age <- compute_TDA_accuracy_crs(sub10, "age_cat_ext2")
+
+# Combine all results into a single dataframe
+overall_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_overall), do.call(rbind, TDA_accuracy_overall))
+study_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_study), do.call(rbind, TDA_accuracy_study))
+risk_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_risk), do.call(rbind, TDA_accuracy_risk))
+hivstatus_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_hivstatus), do.call(rbind, TDA_accuracy_hivstatus))
+sam_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_sam), do.call(rbind, TDA_accuracy_sam))
+age_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_age), do.call(rbind, TDA_accuracy_age))
+
+# Add confidence intervals for sensitivity and specificity
+ci_func <- function(x, n) wilson_ci(x, n)
+
+# Apply confidence intervals for subgroup results
+apply_ci <- function(result) {
+  result$`Sensitivity 95% CI` <- apply(result[, c("TP", "FN")], 1, function(x) {
+    ci_values <- ci_func(x[1], sum(x))
+    paste0("(", round(ci_values[1] * 100, 2), "% - ", round(ci_values[2] * 100, 2), "%)")
+  })
+  result$`Specificity 95% CI` <- apply(result[, c("TN", "FP")], 1, function(x) {
+    ci_values <- ci_func(x[1], sum(x))
+    paste0("(", round(ci_values[1] * 100, 2), "% - ", round(ci_values[2] * 100, 2), "%)")
+  })
+  return(result)
+}
+
+overall_results_TDA <- apply_ci(overall_results_TDA)
+study_results_TDA <- apply_ci(study_results_TDA)
+risk_results_TDA <- apply_ci(risk_results_TDA)
+hivstatus_results_TDA <- apply_ci(hivstatus_results_TDA)
+sam_results_TDA <- apply_ci(sam_results_TDA)
+age_results_TDA <- apply_ci(age_results_TDA)
+
+# Combine all results into a single dataframe
+all_results_TDA <- bind_rows(overall_results_TDA, study_results_TDA, risk_results_TDA, hivstatus_results_TDA, 
+                         sam_results_TDA, age_results_TDA)
+```
+
+```{r}
+# TDA
+diagn_acc_TDA <- all_results_TDA[,c("Subgroup","TP","FP","FN","TN","Sensitivity","Sensitivity 95% CI","Specificity","Specificity 95% CI")]
+row.names(diagn_acc_TDA) <- NULL
+
+# Convert sensitivity and specificity to percentages with one decimal point
+diagn_acc_TDA <- diagn_acc_TDA %>%
+  mutate(Sensitivity = sprintf("%.1f%%", Sensitivity),
+         Specificity = sprintf("%.1f%%", Specificity))
+```
+
+```{r}
+library(kableExtra)
+diagn_acc_TDA %>%
+  kbl() %>%
+  kable_paper("striped", full_width = F) %>%
+  pack_rows("Study", 2, 5) %>%
+  pack_rows("Risk group", 6, 7) %>%
+  pack_rows("HIV status", 8, 10) %>%
+  pack_rows("Malnutrition", 11, 12) %>%
+  pack_rows("Age", 13, 15)
+
+```
+
+Pooled diagnostic accuracy based on random effects meta-analyses
+
+```{r}
+# Generate the dataframe needed
+Studies <- data.frame(TP=c(333,183,230,98), FN=c(31,34,20,24), FP=c(288,151,106,37), TN=c(88,106,112,45))
+Studies$names <- c("RaPaed","UMOYA","Cohort","HIV")
+
+library(mada)
+# Fit the random effects model
+fit.reitsma <- reitsma(Studies, method = "reml")
+summary(fit.reitsma)
+```
+
+```{r}
+plot(fit.reitsma,sroclwd=2, 
+     main="SROC curve (bivariate model) for site-stratified accuracy estimates")
+points(fpr(Studies),sens(Studies),pch=2) 
+legend("bottomright",c("Data","Summary Estimate"),pch=c(2,1)) 
+legend("topright",c("SROC","conf.region"),lwd=c(2,1))
+```
+
+```{r}
+# Visualise forest plots
+Studies.d <- madad(Studies)
+plot1 <- forest(Studies.d, type = "sens", xlab = "Sensitivity",snames = Studies$names, cex=TRUE)
+plot2 <- forest(Studies.d, type = "spec", xlab = "Specificity",snames = Studies$names, cex=TRUE)
+```
+
+**Diagnostic accuracy TDA B using CRS**
+
+```{r}
+# Compute accuracy for each subgroup
+TDA_accuracy_overall <- compute_TDA_accuracy_crs_b(sub10, "Overall")
+TDA_accuracy_study <- compute_TDA_accuracy_crs_b(sub10, "study")
+TDA_accuracy_risk <- compute_TDA_accuracy_crs_b(sub10, "highrisk")
+TDA_accuracy_hivstatus <- compute_TDA_accuracy_crs_b(sub10, "hivstatus")
+TDA_accuracy_sam <- compute_TDA_accuracy_crs_b(sub10, "sam")
+TDA_accuracy_age <- compute_TDA_accuracy_crs_b(sub10, "age_cat_ext2")
+
+# Combine all results into a single dataframe
+overall_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_overall), do.call(rbind, TDA_accuracy_overall))
+study_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_study), do.call(rbind, TDA_accuracy_study))
+risk_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_risk), do.call(rbind, TDA_accuracy_risk))
+hivstatus_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_hivstatus), do.call(rbind, TDA_accuracy_hivstatus))
+sam_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_sam), do.call(rbind, TDA_accuracy_sam))
+age_results_TDA <- data.frame(Subgroup = names(TDA_accuracy_age), do.call(rbind, TDA_accuracy_age))
+
+# Add confidence intervals for sensitivity and specificity
+ci_func <- function(x, n) wilson_ci(x, n)
+
+# Apply confidence intervals for subgroup results
+apply_ci <- function(result) {
+  result$`Sensitivity 95% CI` <- apply(result[, c("TP", "FN")], 1, function(x) {
+    ci_values <- ci_func(x[1], sum(x))
+    paste0("(", round(ci_values[1] * 100, 2), "% - ", round(ci_values[2] * 100, 2), "%)")
+  })
+  result$`Specificity 95% CI` <- apply(result[, c("TN", "FP")], 1, function(x) {
+    ci_values <- ci_func(x[1], sum(x))
+    paste0("(", round(ci_values[1] * 100, 2), "% - ", round(ci_values[2] * 100, 2), "%)")
+  })
+  return(result)
+}
+
+overall_results_TDA <- apply_ci(overall_results_TDA)
+study_results_TDA <- apply_ci(study_results_TDA)
+risk_results_TDA <- apply_ci(risk_results_TDA)
+hivstatus_results_TDA <- apply_ci(hivstatus_results_TDA)
+sam_results_TDA <- apply_ci(sam_results_TDA)
+age_results_TDA <- apply_ci(age_results_TDA)
+
+# Combine all results into a single dataframe
+all_results_TDA <- bind_rows(overall_results_TDA, study_results_TDA, risk_results_TDA, hivstatus_results_TDA, 
+                         sam_results_TDA, age_results_TDA)
+```
+
+```{r}
+# TDA
+diagn_acc_TDA <- all_results_TDA[,c("Subgroup","TP","FP","FN","TN","Sensitivity","Sensitivity 95% CI","Specificity","Specificity 95% CI")]
+row.names(diagn_acc_TDA) <- NULL
+
+# Convert sensitivity and specificity to percentages with one decimal point
+diagn_acc_TDA <- diagn_acc_TDA %>%
+  mutate(Sensitivity = sprintf("%.1f%%", Sensitivity),
+         Specificity = sprintf("%.1f%%", Specificity))
+```
+
+```{r}
+library(kableExtra)
+diagn_acc_TDA %>%
+  kbl() %>%
+  kable_paper("striped", full_width = F) %>%
+  pack_rows("Study", 2, 5) %>%
+  pack_rows("Risk group", 6, 7) %>%
+  pack_rows("HIV status", 8, 10) %>%
+  pack_rows("Malnutrition", 11, 12) %>%
+  pack_rows("Age", 13, 15)
+
+```
+
+Pooled diagnostic accuracy based on random effects meta-analyses
+
+```{r}
+# Generate the dataframe needed
+Studies <- data.frame(TP=c(3348,187,238,122), FN=c(16,30,12,0), FP=c(319,169,155,77), TN=c(57,88,63,5))
+Studies$names <- c("RaPaed","UMOYA","Cohort","HIV")
+
+library(mada)
+# Fit the random effects model
+fit.reitsma <- reitsma(Studies, method = "reml")
+summary(fit.reitsma)
+```
+
+```{r}
+plot(fit.reitsma,sroclwd=2, 
+     main="SROC curve (bivariate model) for site-stratified accuracy estimates")
+points(fpr(Studies),sens(Studies),pch=2) 
+legend("bottomright",c("Data","Summary Estimate"),pch=c(2,1)) 
+legend("topright",c("SROC","conf.region"),lwd=c(2,1))
+```
+
+```{r}
+# Visualise forest plots
+Studies.d <- madad(Studies)
+plot1 <- forest(Studies.d, type = "sens", xlab = "Sensitivity",snames = Studies$names, cex=TRUE)
+plot2 <- forest(Studies.d, type = "spec", xlab = "Specificity",snames = Studies$names, cex=TRUE)
+```
+
+### Figure 3: Agreement between recommendation to initiate treatment according to the TDA and actual clinician decision to treat and diagnostic case definition
+
+```{r}
+# Household level variables
+euler <- sub10 %>%
+  dplyr::mutate(
+    Clinician = ifelse(Treatment == "Yes", 1, 0),
+    TDA = ifelse(TxInitiation == "Yes", 1, 0),
+    TDA_B = ifelse(TxInitiation_B == "Yes", 1, 0)) %>%
+  ungroup()
+```
+
+**TDA A**
+
+```{r}
+library(eulerr)
+euler1 <- euler %>%
+    select(Clinician, TDA) %>%
+    group_by(Clinician, TDA) %>%
+    dplyr::summarise(N = n()) %>%
+    mutate(percent = N/sum(N)) %>%
+    mutate(
+        Clinician = ifelse(Clinician == 1, "Clinician", NA),
+        TDA = ifelse(TDA == 1, "TDA recommendation", NA)) %>%
+    unite("all", Clinician:TDA, na.rm = TRUE, sep = "&") %>%
+    mutate(all = ifelse(all=='', "None", all)) %>%
+    mutate(cat = ifelse(str_detect(all, "&"), "Multiple", all)) %>%
+    ungroup()
+
+euler1 <- euler1 %>% mutate(cat=if_else(cat=="None","No treatment",cat),
+                            all=if_else(all=="None","No treatment",all))
+ 
+## 1
+euler_cd <- euler1 %>%
+  select(all, N) %>%
+  deframe()
+```
+
+```{r}
+eulerr_options(fontsize = 18)
+
+pdf("/Users/leylasophielarsson/Desktop/Studies/Decide-TB/Plots/Decide-TB_Euler_TDA-A_yesNS.pdf", width = 11)
+plot(euler(euler_cd,input = "disjoint"), quantities = list(type = "percent", cex = 2), labels = list(col = "black", fontsize = 18), fill = pal_union_alpha)
+dev.off()
+
+plot <- plot(euler(euler_cd,input = "disjoint"), quantities = list(type = "percent", cex = 2), labels = list(col = "black", fontsize = 18), fill = pal_union_alpha)
+plot
+```
+
+**TDA B**
+
+```{r}
+library(eulerr)
+euler5 <- euler %>%
+    select(Clinician, TDA_B) %>%
+    group_by(Clinician, TDA_B) %>%
+    dplyr::summarise(N = n()) %>%
+    mutate(percent = N/sum(N)) %>%
+    mutate(
+        Clinician = ifelse(Clinician == 1, "Clinician", NA),
+        TDA_B = ifelse(TDA_B == 1, "TDA recommendation", NA)) %>%
+    unite("all", Clinician:TDA_B, na.rm = TRUE, sep = "&") %>%
+    mutate(all = ifelse(all=='', "None", all)) %>%
+    mutate(cat = ifelse(str_detect(all, "&"), "Multiple", all)) %>%
+    ungroup()
+
+euler5 <- euler5 %>% mutate(cat=if_else(cat=="None","No treatment",cat),
+                            all=if_else(all=="None","No treatment",all))
+ 
+## 1
+euler_cd <- euler5 %>%
+  select(all, N) %>%
+  deframe()
+```
+
+```{r}
+pdf("/Users/leylasophielarsson/Desktop/Studies/Decide-TB/Plots/Decide-TB_Euler_TDA-B_yesNS.pdf", width = 11)
+plot(euler(euler_cd,input = "disjoint"), quantities = list(type = "percent", cex = 2), labels = list(col = "black", fontsize = 18), fill = pal_union_b_alpha)
+dev.off()
+
+plot <- plot(euler(euler_cd,
+           input = "disjoint"), quantities =list(type = "percent", cex = 2), labels = list(col = "black", fontsize = 18), fill = pal_union_b_alpha)
+plot
+```
